@@ -166,16 +166,29 @@ class Scenario:
                              tf.location.z + up)
         return carla.Transform(loc, carla.Rotation(yaw=tf.rotation.yaw if yaw is None else yaw))
 
+    def _ground_z(self, loc):
+        """Height of whatever is under `loc` (road or kerb); falls back to the road height."""
+        if hasattr(self.world, "ground_projection"):          # CARLA >= 0.9.12: ray-cast straight down
+            hit = self.world.ground_projection(carla.Location(loc.x, loc.y, loc.z + 5.0), 15.0)
+            if hit is not None:
+                return hit.location.z
+        return self.cmap.get_waypoint(loc).transform.location.z
+
     def _truck(self, fwd, rights):
         """Parked truck (the simulated occluder): physics off so it stays exactly where we put it."""
         bp = next((found[0] for found in (self.lib.filter(n) for n in TRUCK_BPS) if found), None)
         for right in rights:                                  # step until the spawn succeeds
             tf = self._offset(self.spawn_tf, fwd=fwd, right=right, up=0.4)
+            ground = self._ground_z(tf.location)              # measure before spawning (the ray would hit the truck)
             truck = self._spawn(bp, tf)
             if truck:
+                # spawning needs clearance above the road, and with physics off the truck never falls,
+                # so lower it until the bottom of its bounding box (the wheels) touches the ground
                 truck.set_simulate_physics(False)
-                ext = truck.bounding_box.extent
-                return truck, tf, ext
+                bb = truck.bounding_box
+                tf.location.z = ground - (bb.location.z - bb.extent.z)
+                truck.set_transform(tf)
+                return truck, tf, bb.extent
         raise RuntimeError("could not spawn the parked truck - try another --spawn-index")
 
     def _pedestrian(self, fwd, right):
