@@ -49,9 +49,11 @@ JX_MIN_DIST, JX_MAX_DIST = 45.0, 90.0   # how far ahead of the ego spawn the jun
 JX_CROSSING_BACK = 1.5      # truck front / crossing this far before the junction entry [m]
 JX_TRUCK_KERB = 1.4         # truck centre this far right of the road's right edge (half on the kerb)
 JX_PED_GAPS = (0.6, 0.9, 1.2)   # pedestrian this far in front of the truck's nose (first that spawns) [m]
-JX_TRIGGER_DIST = None      # pedestrian steps out when the ego is this close [m]; None = derived from the
-                            # target speed so the pedestrian reaches the ego lane as the ego arrives
-JX_TRIGGER_EXTRA = 4.0      # extra metres added to the derived trigger distance
+JX_PED_SPEED = 2.5          # the pedestrian steps out briskly [m/s] - a slow walk gives the onboard camera time
+JX_TRIGGER_DIST = None      # step out when the ego is this far before the pedestrian (along the road) [m];
+                            # None = derived so the pedestrian reaches the ego lane exactly when a car still
+                            # driving at --target-speed arrives, i.e. too late for the onboard camera alone
+JX_TRIGGER_EXTRA = 2.3      # ego location is the car's centre; its front bumper is ~2.3 m further forward
 EGO_CAM = carla.Transform(carla.Location(x=1.5, z=1.6))
 SLOW_FACTOR = 0.4           # SLOW = drive at 40 % of --target-speed (same as the mock)
 SCENARIO_NAMES = {"intersection": "Blind intersection - pedestrian on crossing hidden by parked delivery truck",
@@ -272,7 +274,7 @@ class Scenario:
                              "length": 2 * ext.x, "width": 2 * ext.y, "height": 2 * ext.z, "label": "parked truck"}
         # pedestrian, hidden just behind the truck's rear end
         self.ped = self._pedestrian(TRUCK_DIST + ext.x + 1.6, PED_LATERAL)
-        self.trigger, self.walk_time = TRIGGER_DIST, WALK_TIME
+        self.trigger, self.walk_time, self.walk_speed = TRIGGER_DIST, WALK_TIME, WALK_SPEED
         # RSU camera on the opposite side, looking across the road and behind the truck
         self._rsu(TRUCK_DIST + ext.x * 0.6, -RSU_SIDE_OFFSET)
 
@@ -298,9 +300,12 @@ class Scenario:
         if self.ped is None:
             raise RuntimeError("could not spawn the pedestrian in front of the truck - try another --spawn-index")
         cross_fwd = ped_fwd
-        self.walk_time = (t_right + left_edge + 2.0) / WALK_SPEED
-        # step out so the pedestrian reaches the ego lane (|right| < 1 m) about when the ego gets there
-        self.trigger = JX_TRIGGER_DIST or (self.args.target_speed / 3.6 * max(t_right - 1.0, 0.5) / WALK_SPEED
+        self.walk_speed = JX_PED_SPEED
+        self.walk_time = (t_right + left_edge + 2.0) / self.walk_speed
+        # Step out so the pedestrian reaches the ego lane (|right| < 1 m) just as a full-speed car arrives.
+        # The trigger is a fixed distance, so a car the RSU has already slowed down reaches it later and slower
+        # and can stop; a car relying on its own camera only sees the pedestrian with a few metres to go.
+        self.trigger = JX_TRIGGER_DIST or (self.args.target_speed / 3.6 * max(t_right - 1.0, 0.5) / self.walk_speed
                                            + JX_TRIGGER_EXTRA)
         print(f"[carla_sim] truck {2 * ext.x:.1f} x {2 * ext.y:.1f} m at {t_right:.1f} m right; "
               f"pedestrian {ped_fwd - t_fwd - ext.x:.1f} m in front of it; trigger {self.trigger:.1f} m")
@@ -343,19 +348,21 @@ class Scenario:
     # -------------------------------------------------------------- per-tick logic
     def step(self, sim_t):
         """Pedestrian trigger + walking. Returns True if a new pedestrian collision happened."""
-        if not self.walking and self.ped_dist() < self.trigger:
+        if not self.walking and self.ped_ahead() < self.trigger:
             self.walking, self.walk_t = True, 0.0
         if self.walking:
             self.walk_t += self.world.get_settings().fixed_delta_seconds
             moving = self.walk_t < self.walk_time
             d = self.ped_dir
-            self.ped.apply_control(carla.WalkerControl(carla.Vector3D(-d.x, -d.y, 0.0), WALK_SPEED if moving else 0.0))
+            self.ped.apply_control(carla.WalkerControl(carla.Vector3D(-d.x, -d.y, 0.0), self.walk_speed if moving else 0.0))
         hit = any("walker" in c for c in self.collisions)
         self.collisions.clear()
         return hit
 
-    def ped_dist(self):
-        return self.ego.get_location().distance(self.ped.get_location())
+    def ped_ahead(self):
+        """How far the pedestrian is ahead of the ego, measured along the road [m]."""
+        return self._road_coords(self.ped.get_location())[0] - self._road_coords(self.ego.get_location())[0]
+
 
     def ego_state(self):
         tr, v = self.ego.get_transform(), self.ego.get_velocity()
