@@ -53,6 +53,9 @@ JX_RSU_AHEAD = 6.0          # RSU pole this far beyond the pedestrian along the 
 JX_RSU_SIDE = 2.5           # ... and this far left of the road's left edge [m]
 JX_RSU_HEIGHT = 6.0         # ... at this height; it is aimed straight at the pedestrian. Keep it close:
                             # from 20+ m a pedestrian is only a few pixels tall and YOLO misses them
+JX_PED_PAUSE = 2.0          # the pedestrian freezes this long in the middle of the ego lane before carrying on.
+                            # Without it a late-braking car arrives a moment later and the pedestrian has
+                            # already walked out of its path - a lucky near-miss instead of the failure we demo
 JX_PED_SPEED = 2.5          # the pedestrian steps out briskly [m/s] - a slow walk gives the onboard camera time
 JX_TRIGGER_DIST = None      # step out when the ego is this far before the pedestrian (along the road) [m];
                             # None = derived so the pedestrian reaches the ego lane exactly when a car still
@@ -255,6 +258,7 @@ class Scenario:
             self._build_parked_truck()
         self.ped_dir = road_tf.get_right_vector()             # crossing = towards the LEFT (-right)
         self.walking, self.walk_t = False, 0.0
+        self.pause_left = self.pause_at = None
 
         # autopilot for the ego, our pipeline is the only thing allowed to react to pedestrians
         self.ego.set_autopilot(True, self.tm.get_port())
@@ -307,11 +311,12 @@ class Scenario:
             raise RuntimeError("could not spawn the pedestrian in front of the truck - try another --spawn-index")
         cross_fwd = ped_fwd
         self.walk_speed = JX_PED_SPEED
+        self.pause_at, self.pause_left = 0.0, JX_PED_PAUSE  # stop on the ego lane centre line
         self.walk_time = (t_right + left_edge + 2.0) / self.walk_speed
-        # Step out so the pedestrian reaches the ego lane (|right| < 1 m) just as a full-speed car arrives.
+        # Step out so the pedestrian reaches the ego lane centre just as a full-speed car arrives.
         # The trigger is a fixed distance, so a car the RSU has already slowed down reaches it later and slower
         # and can stop; a car relying on its own camera only sees the pedestrian with a few metres to go.
-        self.trigger = JX_TRIGGER_DIST or (self.args.target_speed / 3.6 * max(t_right - 1.0, 0.5) / self.walk_speed
+        self.trigger = JX_TRIGGER_DIST or (self.args.target_speed / 3.6 * max(t_right, 0.5) / self.walk_speed
                                            + JX_TRIGGER_EXTRA)
         print(f"[carla_sim] truck {2 * ext.x:.1f} x {2 * ext.y:.1f} m at {t_right:.1f} m right; "
               f"pedestrian {ped_fwd - t_fwd - ext.x:.1f} m in front of it; trigger {self.trigger:.1f} m")
@@ -360,10 +365,15 @@ class Scenario:
         if not self.walking and self.ped_ahead() < self.trigger:
             self.walking, self.walk_t = True, 0.0
         if self.walking:
-            self.walk_t += self.world.get_settings().fixed_delta_seconds
-            moving = self.walk_t < self.walk_time
+            dt = self.world.get_settings().fixed_delta_seconds
+            speed = self.walk_speed if self.walk_t < self.walk_time else 0.0
+            if self.pause_at is not None and self.pause_left > 0 and \
+                    self._road_coords(self.ped.get_location())[1] <= self.pause_at:
+                speed, self.pause_left = 0.0, self.pause_left - dt  # standing in the lane
+            else:
+                self.walk_t += dt
             d = self.ped_dir
-            self.ped.apply_control(carla.WalkerControl(carla.Vector3D(-d.x, -d.y, 0.0), self.walk_speed if moving else 0.0))
+            self.ped.apply_control(carla.WalkerControl(carla.Vector3D(-d.x, -d.y, 0.0), speed))
         hit = any("walker" in c for c in self.collisions)
         self.collisions.clear()
         return hit
@@ -490,13 +500,17 @@ def main():
                 pipe.reset()
                 scn.rebuild()
                 flags["reset"], onboard, rsu_dets, frames, boxes, ego_cam = False, [], [], {}, {}, None
+                print(f"\n---- scenario restarted, cooperative perception {'ON' if pipe.coop else 'OFF'} ----")
             frame_id = world.tick()
             sim_t = world.get_snapshot().timestamp.elapsed_seconds
             img_e, img_r = scn.ego_q.get(frame_id), scn.rsu_q.get(frame_id)
             ego = scn.ego_state()
 
+            was_walking = scn.walking
             if scn.step(sim_t):
                 pipe.collision(sim_t)
+            if scn.walking and not was_walking:
+                pipe.note(sim_t, "info", f"Pedestrian steps out, {scn.ped_ahead():.1f} m ahead of the ego")
 
             if tick % a.detect_every == 0:
                 fe, box_e, onboard = run_detection(detector, img_e, scn.ground_z)
@@ -518,8 +532,10 @@ def main():
             fps = 0.9 * fps + 0.1 / max(now - t_prev, 1e-3)
             t_prev = now
             if now - last_push > 0.1:
-                dash.push(pipe.make_state("carla", sim_t, fps, ego, res, scn.scenario_state(),
-                                          frames, boxes, ego_cam))
+                state = pipe.make_state("carla", sim_t, fps, ego, res, scn.scenario_state(), frames, boxes, ego_cam)
+                for e in state["events"]:                       # timeline in the terminal, for debugging / the report
+                    print(f"[t={e['t']:6.1f}s  {ego['speed'] * 3.6:5.1f} km/h  coop {'ON ' if pipe.coop else 'OFF'}] {e['msg']}")
+                dash.push(state)
                 last_push = now
             tick += 1
     except KeyboardInterrupt:
