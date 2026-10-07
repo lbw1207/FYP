@@ -238,7 +238,7 @@ class Scenario:
     def _build_parked_truck(self):
         self.truck, truck_tf, ext = self._truck(TRUCK_DIST, (2.0, 1.6, 1.2, 0.8))
         self.blocker_info = {"x": truck_tf.location.x, "y": truck_tf.location.y, "yaw": self.road_yaw,
-                             "length": 2 * ext.x, "width": 2 * ext.y, "label": "parked truck"}
+                             "length": 2 * ext.x, "width": 2 * ext.y, "height": 2 * ext.z, "label": "parked truck"}
         # pedestrian, hidden just behind the truck's rear end
         self.ped = self._pedestrian(TRUCK_DIST + ext.x + 1.6, PED_LATERAL)
         self.trigger, self.walk_time = TRIGGER_DIST, WALK_TIME
@@ -253,7 +253,7 @@ class Scenario:
         self.truck, truck_tf, ext = self._truck(cross_fwd - JX_TRUCK_GAP - half_len,
                                                 [right_edge + JX_TRUCK_KERB - d for d in (0.0, 0.4, 0.8, 1.2, 1.6)])
         self.blocker_info = {"x": truck_tf.location.x, "y": truck_tf.location.y, "yaw": self.road_yaw,
-                             "length": 2 * ext.x, "width": 2 * ext.y, "label": "delivery truck (simulated)"}
+                             "length": 2 * ext.x, "width": 2 * ext.y, "height": 2 * ext.z, "label": "delivery truck (simulated)"}
         # pedestrian waiting on the crossing, in front of the truck
         self.ped = self._pedestrian(cross_fwd, right_edge + JX_PED_KERB)
         self.trigger = JX_TRIGGER_DIST

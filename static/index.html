@@ -73,6 +73,10 @@
   .alert .lead{margin-top:10px;font-size:14px;font-weight:600;color:var(--rsu);background:rgba(251,146,60,.1);border-radius:8px;padding:8px 10px}
   .alert.mini{padding:10px 14px} .alert.mini .title{font-size:15px} .alert.mini svg{width:26px;height:26px}
   .alert.mini .d2{margin-left:auto;font-size:18px;font-weight:800}
+  #dAlerts{display:flex;flex-direction:column;gap:12px}
+  #dSurround{flex:1;min-height:180px;padding:8px}
+  #dSurround h2{margin:2px 4px 6px}
+  #cvSur{flex:1;min-height:0;width:100%;border-radius:10px;display:block;background:#0d1420}
   #dNone{color:var(--muted);font-size:15px;text-align:center;padding:24px 10px;border:1px dashed var(--line);border-radius:14px}
 
   /* ---------- SYSTEM MODE ---------- */
@@ -149,6 +153,7 @@
   <aside class="dSide">
     <div id="dAct" class="CLEAR"><div class="word" id="dWord">CLEAR</div><div class="sub" id="dSub">Road ahead is clear</div></div>
     <div id="dAlerts"></div>
+    <div class="card" id="dSurround"><h2>Chase view <em id="surNote"></em></h2><canvas id="cvSur"></canvas></div>
   </aside>
 </section>
 
@@ -343,6 +348,7 @@
     const as = {on:['#34D399','Roadside assist connected'], off:['#94A3B8','Roadside assist off · camera only'], lost:['#FBBF24','Roadside assist unavailable']}[dv.assist];
     $('dAssist').innerHTML = `<i class="dot" style="background:${as[0]}"></i>${as[1]}`;
     $('dEdge').className = act === 'STOP' ? 'STOP' : (top && top.hidden ? top.side : '');
+    $('surNote').textContent = dv.assist === 'on' ? 'camera + roadside unit' : 'camera only';
 
     const box = $('dAlerts');
     if (!alerts.length){
@@ -487,6 +493,122 @@
     ctx.fillStyle = '#93C5FD'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('EGO', PX(2), PY(-1));
   }
 
+  // ---------- driver chase view (third-person 3D camera behind the ego car) ----
+  const CAM = {back: 8.0, z: 5.5, pitch: 26 * Math.PI / 180, near: 0.5};
+  const rgba = (c, k = 1, a = c[3] ?? 1) => `rgba(${c[0] * k | 0},${c[1] * k | 0},${c[2] * k | 0},${a})`;
+  function drawSurround(){
+    const {ctx, w, h} = prep($('cvSur'));
+    const F = w * 0.85, cy = h * 0.52, cp = Math.cos(CAM.pitch), sp = Math.sin(CAM.pitch);
+    const camPos = [-CAM.back, 0, CAM.z];
+    // world (f forward, l right, z up; ego at the origin) -> camera [depth, right, up] -> screen
+    const toCam = (f, l, z) => { const x = f + CAM.back, zc = z - CAM.z; return [x * cp - zc * sp, l, x * sp + zc * cp]; };
+    const scr = c => [w / 2 + F * c[1] / c[0], cy - F * c[2] / c[0]];
+    function poly(pts, fill, stroke){                          // 3-D polygon, clipped at the near plane
+      const c = pts.map(p => toCam(p[0], p[1], p[2])), out = [];
+      for (let i = 0; i < c.length; i++){
+        const a = c[i], b = c[(i + 1) % c.length];
+        if (a[0] >= CAM.near) out.push(a);
+        if ((a[0] >= CAM.near) !== (b[0] >= CAM.near)){
+          const t = (CAM.near - a[0]) / (b[0] - a[0]);
+          out.push([CAM.near, a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2])]);
+        }
+      }
+      if (out.length < 3) return;
+      ctx.beginPath(); out.map(scr).forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath();
+      if (fill){ ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke){ ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
+    }
+    const ground = (f0, f1, l0, l1, fill, z = 0) => poly([[f0, l0, z], [f1, l0, z], [f1, l1, z], [f0, l1, z]], fill);
+    function box(f, l, len, wid, hgt, z0, col, edge = 'rgba(0,0,0,.35)'){   // axis-aligned box, camera-facing faces only
+      const f0 = f - len / 2, f1 = f + len / 2, l0 = l - wid / 2, l1 = l + wid / 2, z1 = z0 + hgt, zm = z0 + hgt / 2;
+      [[[0, 0, 1], [f, l, z1], [[f0, l0, z1], [f1, l0, z1], [f1, l1, z1], [f0, l1, z1]], 1.0],
+       [[-1, 0, 0], [f0, l, zm], [[f0, l0, z0], [f0, l1, z0], [f0, l1, z1], [f0, l0, z1]], 0.78],
+       [[1, 0, 0], [f1, l, zm], [[f1, l0, z0], [f1, l1, z0], [f1, l1, z1], [f1, l0, z1]], 0.78],
+       [[0, -1, 0], [f, l0, zm], [[f0, l0, z0], [f1, l0, z0], [f1, l0, z1], [f0, l0, z1]], 0.62],
+       [[0, 1, 0], [f, l1, zm], [[f0, l1, z0], [f1, l1, z0], [f1, l1, z1], [f0, l1, z1]], 0.62]
+      ].forEach(([n, c, pts, k]) => {
+        if (n[0] * (camPos[0] - c[0]) + n[1] * (camPos[1] - c[1]) + n[2] * (camPos[2] - c[2]) > 0) poly(pts, rgba(col, k), edge);
+      });
+    }
+    function car(f, l, body, glass, ego){
+      box(f, l, 4.5, 1.85, 0.72, 0.28, body);
+      box(f - 0.25, l, 2.3, 1.55, 0.5, 1.0, glass);
+      if (ego) [-0.62, 0.62].forEach(o => poly([[f - 2.26, l + o - 0.22, 0.72], [f - 2.26, l + o + 0.22, 0.72], [f - 2.26, l + o + 0.22, 0.88], [f - 2.26, l + o - 0.22, 0.88]], '#ef4444'));
+    }
+    function person(f, l, col, head){
+      box(f, l, 0.35, 0.5, 1.35, 0, col, null);
+      const c = toCam(f, l, 1.58);
+      if (c[0] > CAM.near){ const q = scr(c); ctx.fillStyle = head; ctx.beginPath(); ctx.arc(q[0], q[1], F * 0.17 / c[0], 0, 7); ctx.fill(); }
+    }
+    function label(f, l, z, text, col){
+      const c = toCam(f, l, z); if (c[0] <= CAM.near) return;
+      const q = scr(c); ctx.font = '700 12px -apple-system,sans-serif'; const tw = ctx.measureText(text).width;
+      ctx.fillStyle = col; ctx.fillRect(q[0] - tw / 2 - 5, q[1] - 17, tw + 10, 17);
+      ctx.fillStyle = '#0B1120'; ctx.fillText(text, q[0] - tw / 2, q[1] - 4);
+    }
+
+    // sky + ground
+    const horizon = cy - F * Math.tan(CAM.pitch);
+    let g = ctx.createLinearGradient(0, 0, 0, horizon);
+    g.addColorStop(0, '#060a14'); g.addColorStop(1, '#1a2438');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, Math.max(0, horizon));
+    ctx.fillStyle = '#111827'; ctx.fillRect(0, horizon, w, h - horizon);
+    if (!state) return;
+    const s0 = state.scenario || {}, d = state.decision, act = state.driver.action, ROAD = 5.25, FAR = 70;
+    const j = s0.junction, jf0 = j ? j.f - j.width / 2 : 1e9, jf1 = j ? j.f + j.width / 2 : 1e9;
+
+    // roads, markings, crossing
+    ground(-12, FAR, -ROAD, ROAD, '#232d3d');
+    if (j) ground(jf0, jf1, -60, 60, '#232d3d');
+    const spans = j ? [[-12, jf0], [jf1, FAR]] : [[-12, FAR]];
+    spans.forEach(([a, b]) => {
+      [-ROAD, ROAD - 0.15].forEach(l => ground(a, b, l, l + 0.15, 'rgba(226,232,240,.75)', 0.01));
+      [-1.75, 1.75].forEach(l => { for (let f = Math.ceil(a / 6) * 6; f + 3 <= b; f += 6) ground(f, f + 3, l - 0.06, l + 0.06, 'rgba(226,232,240,.5)', 0.01); });
+    });
+    if (j) [jf0, jf1 - 0.15].forEach(f => { ground(f, f + 0.15, -60, -ROAD, 'rgba(226,232,240,.6)', 0.01); ground(f, f + 0.15, ROAD, 60, 'rgba(226,232,240,.6)', 0.01); });
+    if (s0.crossing){ const c = s0.crossing; for (let l = -ROAD + 0.4; l < ROAD - 0.3; l += 1) ground(c.f - c.width / 2, c.f + c.width / 2, l, l + 0.5, 'rgba(241,245,249,.8)', 0.02); }
+
+    // predicted path, coloured by the action
+    const pc = {CLEAR: [96, 165, 250], SLOW: [251, 191, 36], STOP: [248, 113, 113]}[act];
+    const hz = d.hazard, len = Math.min(45, hz ? Math.max(hz.f - 1, 4) : act === 'CLEAR' ? 30 : d.slow_dist);
+    const n0 = scr(toCam(2.4, 0, 0)), n1 = scr(toCam(len, 0, 0));
+    g = ctx.createLinearGradient(0, n0[1], 0, n1[1]);
+    g.addColorStop(0, rgba(pc, 1, 0.5)); g.addColorStop(1, rgba(pc, 1, 0));
+    ground(2.4, len, -1.0, 1.0, g, 0.02);
+    if (act !== 'CLEAR' && hz) ground(hz.f - 1.3, hz.f - 0.9, -1.6, 1.6, rgba(pc, 1, 0.95), 0.03);
+
+    const objs = (state.objects || []).filter(o => o.f > -CAM.back + 1 && o.f < FAR);
+
+    // 3-D objects, far to near (painter's algorithm)
+    const items = [];
+    const b = s0.blocker;
+    if (b) items.push({f: b.f, l: b.l, draw: () => box(b.f, b.l, b.length, b.width, b.height || 3.5, 0, [72, 82, 99])});
+    const onBlocker = o => b && Math.abs(o.f - b.f) < b.length / 2 && Math.abs(o.l - b.l) < b.width / 2 + 0.5;
+    objs.filter(o => !o.hidden).forEach(o => {
+      if (VRU.has(o.cls)) items.push({f: o.f, l: o.l, draw: () => person(o.f, o.l, [226, 232, 240], '#F8FAFC')});
+      else if (!onBlocker(o)) items.push({f: o.f, l: o.l, draw: () => car(o.f, o.l, [148, 163, 184], [51, 65, 85], false)});
+    });
+    items.sort((p, q) => Math.hypot(q.f + CAM.back, q.l) - Math.hypot(p.f + CAM.back, p.l)).forEach(it => it.draw());
+
+    // hidden objects last, "x-ray" style through the blocker: ground ring + translucent figure + distance
+    objs.filter(o => o.hidden).sort((p, q) => q.f - p.f).forEach(o => {
+      const r = 1.2 + 0.3 * Math.sin(pulse * 2), ring = [];
+      for (let i = 0; i < 20; i++) ring.push([o.f + r * Math.cos(i * Math.PI / 10), o.l + r * Math.sin(i * Math.PI / 10), 0.03]);
+      ctx.setLineDash([5, 4]); poly(ring, 'rgba(251,146,60,.25)', '#FB923C'); ctx.setLineDash([]);
+      ctx.globalAlpha = 0.65 + 0.3 * Math.sin(pulse * 2);
+      if (VRU.has(o.cls)) person(o.f, o.l, [251, 146, 60], '#FDBA74');
+      else car(o.f, o.l, [251, 146, 60], [124, 45, 18], false);
+      ctx.globalAlpha = 1;
+      label(o.f, o.l, 2.4, `${VRU.has(o.cls) ? 'HIDDEN' : 'HIDDEN VEHICLE'} · ${o.f.toFixed(0)} m`, '#FB923C');
+    });
+    car(0, 0, [241, 245, 249], [30, 41, 59], true);                     // ego, always nearest the camera
+
+    // distance fog towards the horizon
+    g = ctx.createLinearGradient(0, horizon, 0, horizon + h * 0.14);
+    g.addColorStop(0, 'rgba(17,24,39,.95)'); g.addColorStop(1, 'rgba(17,24,39,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, horizon, w, h * 0.14);
+  }
+
   // ---------- render loop -----------------------------------------------------
   function frame(){
     pulse = (pulse + 0.05) % (Math.PI * 2);
@@ -494,6 +616,7 @@
     if (document.body.className === 'driver'){
       const c = drawFrame($('cvDrv'), imgs.vehicle);
       if (c && state) drawGhosts(c, state.driver.ghosts, true);
+      drawSurround();
     } else {
       const ce = drawFrame($('cvEgo'), imgs.vehicle);
       if (ce && state){ drawBoxes(ce, b.vehicle, false); drawGhosts(ce, state.driver.ghosts, false); }

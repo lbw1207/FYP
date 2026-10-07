@@ -204,7 +204,8 @@ class Pipeline:
             b = scenario["blocker"]
             f, l = rel(b["x"], b["y"])
             sc["blocker"] = {"f": f, "l": l, "rel_yaw": b["yaw"] - ego["yaw"], "length": b["length"],
-                             "width": b["width"], "label": b.get("label", "obstruction")}
+                             "width": b["width"], "height": b.get("height", 3.5),
+                             "label": b.get("label", "obstruction")}
         if scenario.get("junction"):
             j = scenario["junction"]
             f, l = rel(j["x"], j["y"])

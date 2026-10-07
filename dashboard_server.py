@@ -26,7 +26,7 @@ class DashboardServer:
 
         @self.app.get("/")
         async def index():
-            return FileResponse(os.path.join(STATIC, "index.html"))
+            return FileResponse(os.path.join(STATIC, "index.html"), headers={"Cache-Control": "no-store"})
 
         @self.app.websocket("/ws")
         async def ws_endpoint(ws: WebSocket):
