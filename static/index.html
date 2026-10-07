@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perceptinet — Cooperative Perception Dashboard</title>
+<style>
+  :root{
+    --bg:#111827; --panel:#1F2937; --panel2:#273244; --line:#374151; --text:#F9FAFB; --muted:#9CA3AF;
+    --accent:#60A5FA; --ok:#34D399; --warn:#FBBF24; --alert:#F87171; --rsu:#FB923C;
+  }
+  @media (prefers-color-scheme: light){ :root{} }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px}
+  header h1 span{color:var(--accent)}
+  .pill{font-size:12px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:var(--panel)}
+  .pill b{color:var(--text);font-weight:600}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--alert);margin-right:6px}
+  .dot.on{background:var(--ok)}
+  .spacer{flex:1}
+  main{display:grid;grid-template-columns:minmax(300px,1fr) minmax(360px,1.15fr) minmax(300px,.85fr);
+    gap:12px;padding:12px;height:calc(100% - 56px)}
+  .col{display:flex;flex-direction:column;gap:12px;min-height:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0}
+  .card h2{margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:600;display:flex;justify-content:space-between}
+  .card h2 em{font-style:normal;color:var(--accent);text-transform:none;letter-spacing:0}
+  .feed{flex:1;min-height:0;position:relative;background:#000;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  .feed img{width:100%;height:100%;object-fit:contain}
+  .feed .ph{position:absolute;color:var(--muted);font-size:13px}
+  #bevWrap{flex:1;min-height:0;position:relative}
+  #bev{position:absolute;inset:0;width:100%;height:100%;border-radius:8px;background:#0d1420}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+  #banner{border-radius:12px;padding:14px 16px;border:1px solid var(--line);background:var(--panel2)}
+  #banner .state{font-size:34px;font-weight:800;letter-spacing:1px;line-height:1}
+  #banner .reason{font-size:13px;color:var(--muted);margin-top:6px;min-height:18px}
+  #banner.CLEAR{border-color:var(--ok)}  #banner.CLEAR .state{color:var(--ok)}
+  #banner.SLOW{border-color:var(--warn)} #banner.SLOW .state{color:var(--warn)}
+  #banner.STOP{border-color:var(--alert);background:#3a1d24} #banner.STOP .state{color:var(--alert)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .m{background:var(--panel2);border-radius:8px;padding:8px 10px}
+  .m .k{font-size:11px;color:var(--muted)} .m .v{font-size:18px;font-weight:700;margin-top:2px}
+  .m .v small{font-size:11px;font-weight:500;color:var(--muted)}
+  .ctl{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;font-size:13px}
+  .switch{position:relative;width:44px;height:24px;flex:none}
+  .switch input{opacity:0;width:0;height:0}
+  .switch span{position:absolute;inset:0;background:#4B5563;border-radius:24px;cursor:pointer;transition:.2s}
+  .switch span:before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+  .switch input:checked + span{background:var(--accent)} .switch input:checked + span:before{transform:translateX(20px)}
+  input[type=range]{flex:1;accent-color:var(--accent)}
+  button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px}
+  button:hover{border-color:var(--accent)}
+  #log{flex:1;min-height:60px;overflow:auto;font-size:12px;display:flex;flex-direction:column;gap:5px}
+  #log div{padding:5px 8px;border-radius:6px;background:var(--panel2);border-left:3px solid var(--muted)}
+  #log .ok{border-color:var(--ok)} #log .warn{border-color:var(--warn)} #log .alert{border-color:var(--alert)} #log .info{border-color:var(--accent)}
+  #log time{color:var(--muted);margin-right:6px}
+  @media (max-width:1100px){ main{grid-template-columns:1fr;height:auto} .feed{aspect-ratio:16/9} #bevWrap{aspect-ratio:1/1.1} }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>PERCEPTINET</span> — Cooperative Perception Dashboard</h1>
+  <span class="pill"><i class="dot" id="conn"></i><b id="connTxt">connecting…</b></span>
+  <span class="pill">Mode <b id="pMode">–</b></span>
+  <span class="pill">V2I link <b id="pTrans">–</b></span>
+  <span class="pill">Sim time <b id="pT">0.0</b> s</span>
+  <span class="pill">Loop <b id="pFps">0</b> FPS</span>
+  <span class="spacer"></span>
+  <span class="pill">FIT3163 · PDS-26</span>
+</header>
+
+<main>
+  <div class="col">
+    <div class="card" style="flex:1">
+      <h2>Vehicle camera <em>YOLO · onboard</em></h2>
+      <div class="feed"><span class="ph" id="phVeh">waiting for stream…</span><img id="imgVeh" alt=""></div>
+    </div>
+    <div class="card" style="flex:1">
+      <h2>RSU camera <em>YOLO · roadside</em></h2>
+      <div class="feed"><span class="ph" id="phRsu">waiting for stream…</span><img id="imgRsu" alt=""></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="card" style="flex:1">
+      <h2>Fused bird's-eye view <em id="bevInfo">ego-centred</em></h2>
+      <div id="bevWrap"><canvas id="bev"></canvas></div>
+      <div class="legend">
+        <span><i style="background:var(--accent)"></i>onboard only</span>
+        <span><i style="background:var(--rsu)"></i>RSU only (occluded for vehicle)</span>
+        <span><i style="background:var(--ok)"></i>confirmed by both</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div id="banner" class="CLEAR"><div class="state" id="dState">CLEAR</div><div class="reason" id="dReason">–</div></div>
+
+    <div class="card">
+      <h2>System metrics</h2>
+      <div class="grid2">
+        <div class="m"><div class="k">Ego speed</div><div class="v"><span id="mSpeed">0</span> <small>km/h</small></div></div>
+        <div class="m"><div class="k">V2I latency</div><div class="v"><span id="mLat">0</span> <small>ms</small></div></div>
+        <div class="m"><div class="k">Early-warning lead</div><div class="v"><span id="mLead">–</span> <small>s</small></div></div>
+        <div class="m"><div class="k">Collisions</div><div class="v"><span id="mCol">0</span></div></div>
+        <div class="m"><div class="k">V2I payload</div><div class="v"><span id="mPay">0</span> <small>B / msg</small></div></div>
+        <div class="m"><div class="k">vs. sending the frame</div><div class="v"><span id="mFrame">–</span></div></div>
+        <div class="m"><div class="k">Detections onboard / RSU</div><div class="v"><span id="mDet">0 / 0</span></div></div>
+        <div class="m"><div class="k">Messages</div><div class="v"><span id="mRate">0</span> <small>/ s</small></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Experiment controls</h2>
+      <div class="ctl"><span>Cooperative perception (RSU → vehicle)</span>
+        <label class="switch"><input type="checkbox" id="cCoop" checked><span></span></label></div>
+      <div class="ctl"><span>Injected V2I delay</span>
+        <input type="range" id="cLat" min="0" max="1000" step="50" value="0"><b id="cLatV" style="width:64px;text-align:right">0 ms</b></div>
+      <div class="ctl"><button id="cReset">↻ Restart scenario</button></div>
+    </div>
+
+    <div class="card" style="flex:1">
+      <h2>Event log</h2>
+      <div id="log"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const COL = {onboard:'#60A5FA', rsu:'#FB923C', both:'#34D399'};
+  let ws, state = null, pulse = 0;
+
+  // ---------- websocket -------------------------------------------------------
+  function connect(){
+    ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen  = () => { $('conn').classList.add('on'); $('connTxt').textContent = 'live'; };
+    ws.onclose = () => { $('conn').classList.remove('on'); $('connTxt').textContent = 'disconnected'; setTimeout(connect, 1500); };
+    ws.onmessage = ev => { state = JSON.parse(ev.data); update(state); };
+  }
+  const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+
+  // ---------- controls --------------------------------------------------------
+  $('cCoop').onchange = e => send({cmd:'set_coop', value:e.target.checked});
+  $('cLat').oninput   = e => { $('cLatV').textContent = e.target.value + ' ms'; send({cmd:'set_latency', value:+e.target.value}); };
+  $('cReset').onclick = () => { $('log').innerHTML = ''; send({cmd:'reset'}); };
+
+  // ---------- UI update -------------------------------------------------------
+  function update(s){
+    $('pMode').textContent = s.mode.toUpperCase();
+    $('pTrans').textContent = s.transport;
+    $('pT').textContent = s.t.toFixed(1);
+    $('pFps').textContent = s.fps.toFixed(0);
+    if (s.frames.vehicle){ $('imgVeh').src = 'data:image/jpeg;base64,' + s.frames.vehicle; $('phVeh').style.display = 'none'; }
+    if (s.frames.rsu){     $('imgRsu').src = 'data:image/jpeg;base64,' + s.frames.rsu;     $('phRsu').style.display = 'none'; }
+
+    const d = s.decision;
+    $('banner').className = d.state;
+    $('dState').textContent = d.state;
+    $('dReason').textContent = d.reason;
+
+    const m = s.metrics;
+    $('mSpeed').textContent = s.ego.speed_kmh.toFixed(0);
+    $('mLat').textContent = m.latency_ms.toFixed(0);
+    $('mLead').textContent = m.lead_time_s == null ? '–' : (m.lead_time_s >= 0 ? '+' : '') + m.lead_time_s.toFixed(1);
+    $('mCol').textContent = s.collisions;
+    $('mCol').style.color = s.collisions ? 'var(--alert)' : '';
+    $('mPay').textContent = m.payload_bytes;
+    $('mFrame').textContent = (m.frame_bytes && m.payload_bytes) ? `${(100 * (1 - m.payload_bytes / m.frame_bytes)).toFixed(1)}% smaller` : '–';
+    $('mDet').textContent = `${m.n_onboard} / ${m.n_rsu}`;
+    $('mRate').textContent = m.msgs_per_s.toFixed(0);
+    $('cCoop').checked = s.coop;
+    if (document.activeElement !== $('cLat')){ $('cLat').value = s.latency_set_ms; $('cLatV').textContent = s.latency_set_ms + ' ms'; }
+    $('bevInfo').textContent = s.coop ? 'cooperative mode' : 'onboard-only mode';
+
+    const log = $('log');
+    (s.events || []).forEach(e => {
+      const row = document.createElement('div');
+      row.className = e.level;
+      row.innerHTML = `<time>${e.t.toFixed(1)}s</time>`;
+      row.appendChild(document.createTextNode(e.msg));
+      log.prepend(row);
+      while (log.children.length > 40) log.lastChild.remove();
+    });
+  }
+
+  // ---------- bird's-eye canvas ----------------------------------------------
+  const cv = $('bev'), ctx = cv.getContext('2d');
+  const RANGE = {fwd: 68, back: 12, side: 18};
+
+  function draw(){
+    pulse = (pulse + 0.05) % (Math.PI * 2);
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)){ cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const sc = Math.min(w / (2 * RANGE.side), h / (RANGE.fwd + RANGE.back));
+    const baseY = h - RANGE.back * sc;
+    const PX = l => w / 2 + l * sc, PY = f => baseY - f * sc;
+
+    // grid
+    ctx.strokeStyle = 'rgba(148,163,184,.10)'; ctx.lineWidth = 1; ctx.fillStyle = 'rgba(148,163,184,.45)'; ctx.font = '10px sans-serif';
+    for (let f = 0; f <= RANGE.fwd; f += 10){ ctx.beginPath(); ctx.moveTo(0, PY(f)); ctx.lineTo(w, PY(f)); ctx.stroke(); ctx.fillText(f + ' m', 4, PY(f) - 3); }
+    for (let l = -15; l <= 15; l += 5){ ctx.beginPath(); ctx.moveTo(PX(l), 0); ctx.lineTo(PX(l), h); ctx.stroke(); }
+
+    if (!state){ ctx.fillStyle = '#9CA3AF'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('waiting for simulation…', w / 2, h / 2); ctx.textAlign = 'start'; requestAnimationFrame(draw); return; }
+
+    const d = state.decision;
+    // ego lane + decision zones
+    ctx.fillStyle = 'rgba(148,163,184,.07)'; ctx.fillRect(PX(-1.75), PY(RANGE.fwd), 3.5 * sc, (RANGE.fwd + 0) * sc);
+    ctx.fillStyle = 'rgba(251,191,36,.08)'; ctx.fillRect(PX(-d.slow_half), PY(d.slow_dist), 2 * d.slow_half * sc, d.slow_dist * sc);
+    ctx.fillStyle = 'rgba(248,113,113,.14)'; ctx.fillRect(PX(-d.stop_half), PY(d.stop_dist), 2 * d.stop_half * sc, d.stop_dist * sc);
+    ctx.strokeStyle = 'rgba(251,191,36,.5)'; ctx.setLineDash([4, 4]); ctx.strokeRect(PX(-d.slow_half), PY(d.slow_dist), 2 * d.slow_half * sc, d.slow_dist * sc);
+    ctx.strokeStyle = 'rgba(248,113,113,.6)'; ctx.strokeRect(PX(-d.stop_half), PY(d.stop_dist), 2 * d.stop_half * sc, d.stop_dist * sc); ctx.setLineDash([]);
+
+    // onboard field of view (90 deg)
+    ctx.strokeStyle = 'rgba(96,165,250,.35)'; ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.moveTo(PX(0), PY(0)); ctx.lineTo(PX(RANGE.fwd), PY(RANGE.fwd)); ctx.moveTo(PX(0), PY(0)); ctx.lineTo(PX(-RANGE.fwd), PY(RANGE.fwd)); ctx.stroke(); ctx.setLineDash([]);
+
+    // occluder (parked truck)
+    const sc0 = state.scenario || {};
+    if (sc0.truck){
+      const t = sc0.truck; ctx.save(); ctx.translate(PX(t.l), PY(t.f)); ctx.rotate(t.rel_yaw * Math.PI / 180);
+      ctx.fillStyle = '#4B5563'; ctx.strokeStyle = '#9CA3AF'; ctx.lineWidth = 1.5;
+      ctx.fillRect(-t.width / 2 * sc, -t.length / 2 * sc, t.width * sc, t.length * sc); ctx.strokeRect(-t.width / 2 * sc, -t.length / 2 * sc, t.width * sc, t.length * sc);
+      ctx.restore(); ctx.fillStyle = '#9CA3AF'; ctx.font = '11px sans-serif'; ctx.fillText('parked truck', PX(t.l) + t.width * sc / 2 + 6, PY(t.f) + 4);
+    }
+    // RSU marker
+    if (sc0.rsu){
+      const r = sc0.rsu, x = PX(r.l), y = PY(r.f);
+      ctx.strokeStyle = 'rgba(251,146,60,.6)'; ctx.lineWidth = 1.5;
+      for (let i = 1; i <= 3; i++){ ctx.beginPath(); ctx.arc(x, y, 6 + i * 6 + Math.sin(pulse) * 1.5, -0.8, 0.8); ctx.stroke(); }
+      ctx.fillStyle = '#FB923C'; ctx.fillRect(x - 5, y - 5, 10, 10);
+      ctx.fillStyle = '#FDBA74'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('RSU', x + 10, y + 4);
+    }
+    // detected objects
+    (state.objects || []).forEach(o => {
+      const x = PX(o.l), y = PY(o.f), col = COL[o.src] || '#ccc', vru = ['person', 'pedestrian', 'bicycle', 'cyclist', 'motorcycle'].includes(o.cls);
+      if (o.src === 'rsu'){ ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 12 + Math.sin(pulse * 2) * 3, 0, 7); ctx.stroke(); }
+      ctx.fillStyle = col;
+      if (vru){ ctx.beginPath(); ctx.arc(x, y, 6, 0, 7); ctx.fill(); }
+      else { ctx.fillRect(x - 5, y - 9, 10, 18); }
+      ctx.fillStyle = '#F9FAFB'; ctx.font = '11px sans-serif'; ctx.fillText(`${o.cls} ${o.f.toFixed(0)} m`, x + 12, y - 8);
+    });
+    // ego
+    ctx.fillStyle = '#60A5FA'; ctx.beginPath(); ctx.moveTo(PX(0), PY(2.4)); ctx.lineTo(PX(-1.1), PY(-2)); ctx.lineTo(PX(1.1), PY(-2)); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#93C5FD'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('EGO', PX(2), PY(-1));
+
+    requestAnimationFrame(draw);
+  }
+  connect();
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>
