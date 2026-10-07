@@ -46,16 +46,17 @@ WALK_SPEED, WALK_TIME = 1.5, 6.5
 RSU_SIDE_OFFSET, RSU_HEIGHT, RSU_PITCH = 6.5, 8.0, -35.0     # RSU pole on the LEFT of the road
 # intersection scenario (distances along the ego road, relative to where the junction starts)
 JX_MIN_DIST, JX_MAX_DIST = 45.0, 90.0   # how far ahead of the ego spawn the junction may be
-JX_CROSSING_BACK = 1.5      # pedestrian / crossing this far before the junction entry [m]
-JX_TRUCK_GAP = 1.0          # gap between the truck's front and the pedestrian [m]
+JX_CROSSING_BACK = 1.5      # truck front / crossing this far before the junction entry [m]
 JX_TRUCK_KERB = 1.4         # truck centre this far right of the road's right edge (half on the kerb)
-JX_PED_KERB = 0.8           # pedestrian this far right of the road's right edge
-JX_TRIGGER_DIST = 19.0      # pedestrian steps out when the ego is this close [m] - tune for your town/speed
+JX_PED_GAPS = (0.6, 0.9, 1.2)   # pedestrian this far in front of the truck's nose (first that spawns) [m]
+JX_TRIGGER_DIST = None      # pedestrian steps out when the ego is this close [m]; None = derived from the
+                            # target speed so the pedestrian reaches the ego lane as the ego arrives
+JX_TRIGGER_EXTRA = 4.0      # extra metres added to the derived trigger distance
 EGO_CAM = carla.Transform(carla.Location(x=1.5, z=1.6))
 SLOW_FACTOR = 0.4           # SLOW = drive at 40 % of --target-speed (same as the mock)
 SCENARIO_NAMES = {"intersection": "Blind intersection - pedestrian on crossing hidden by parked delivery truck",
                   "parked_truck": "Blind spot - pedestrian behind parked truck"}
-TRUCK_BPS = ("vehicle.carlamotors.european_hgv", "vehicle.carlamotors.carlacola", "vehicle.carlamotors.firetruck",
+TRUCK_BPS = ("vehicle.carlamotors.carlacola", "vehicle.carlamotors.european_hgv", "vehicle.carlamotors.firetruck",
              "vehicle.mitsubishi.fusorosa")
 
 
@@ -193,12 +194,24 @@ class Scenario:
         raise RuntimeError("could not spawn the parked truck - try another --spawn-index")
 
     def _pedestrian(self, fwd, right):
+        ped = self._try_pedestrian(fwd, right)
+        if ped is None:
+            raise RuntimeError("could not spawn the pedestrian")
+        return ped
+
+    def _try_pedestrian(self, fwd, right):
         bp = self.lib.filter("walker.pedestrian.0001")[0]
         for dz in (0.6, 1.0, 1.5):
             ped = self._spawn(bp, self._offset(self.spawn_tf, fwd=fwd, right=right, up=dz))
             if ped:
                 return ped
-        raise RuntimeError("could not spawn the pedestrian")
+        return None
+
+    def _road_coords(self, loc):
+        """World location -> (forward, right) metres in the ego road frame (relative to the ego spawn)."""
+        f, r, o = self.spawn_tf.get_forward_vector(), self.spawn_tf.get_right_vector(), self.spawn_tf.location
+        dx, dy = loc.x - o.x, loc.y - o.y
+        return dx * f.x + dy * f.y, dx * r.x + dy * r.y
 
     def _rsu(self, fwd, right, look_at=None):
         tf = self._offset(self.spawn_tf, fwd=fwd, right=right, up=RSU_HEIGHT, yaw=self.road_yaw + 90.0)
@@ -265,17 +278,32 @@ class Scenario:
 
     def _build_intersection(self):
         right_edge, left_edge = road_edges(self.jx_wp)
-        cross_fwd = self.jx_dist - JX_CROSSING_BACK
-        # delivery truck parked half on the kerb, its front just short of the crossing
-        half_len = 4.5                                        # roughly half a truck; the real extent is reported
-        self.truck, truck_tf, ext = self._truck(cross_fwd - JX_TRUCK_GAP - half_len,
-                                                [right_edge + JX_TRUCK_KERB - d for d in (0.0, 0.4, 0.8, 1.2, 1.6)])
+        # delivery truck parked half on the kerb, its nose just short of the crossing (truck sizes differ
+        # between blueprints, so everything below is placed from the extent of the truck that actually spawned)
+        nose = self.jx_dist - JX_CROSSING_BACK
+        self.truck, truck_tf, ext = self._truck(nose - 4.5, [right_edge + JX_TRUCK_KERB - d for d in (0.0, 0.4, 0.8, 1.2, 1.6)])
+        bb = self.truck.bounding_box
+        t_fwd, t_right = self._road_coords(truck_tf.location)
+        t_fwd += bb.location.x                                # bounding-box centre (may be offset from the origin)
         self.blocker_info = {"x": truck_tf.location.x, "y": truck_tf.location.y, "yaw": self.road_yaw,
                              "length": 2 * ext.x, "width": 2 * ext.y, "height": 2 * ext.z, "label": "delivery truck (simulated)"}
-        # pedestrian waiting on the crossing, in front of the truck
-        self.ped = self._pedestrian(cross_fwd, right_edge + JX_PED_KERB)
-        self.trigger = JX_TRIGGER_DIST
-        self.walk_time = (right_edge + JX_PED_KERB + left_edge + 2.0) / WALK_SPEED
+        # pedestrian right in front of the truck's nose and centred on its width: the whole truck is then
+        # between the ego camera and the pedestrian, so the onboard camera cannot see them until they step out
+        self.ped, ped_fwd = None, None
+        for gap in JX_PED_GAPS:
+            ped_fwd = t_fwd + ext.x + gap
+            self.ped = self._try_pedestrian(ped_fwd, t_right)
+            if self.ped:
+                break
+        if self.ped is None:
+            raise RuntimeError("could not spawn the pedestrian in front of the truck - try another --spawn-index")
+        cross_fwd = ped_fwd
+        self.walk_time = (t_right + left_edge + 2.0) / WALK_SPEED
+        # step out so the pedestrian reaches the ego lane (|right| < 1 m) about when the ego gets there
+        self.trigger = JX_TRIGGER_DIST or (self.args.target_speed / 3.6 * max(t_right - 1.0, 0.5) / WALK_SPEED
+                                           + JX_TRIGGER_EXTRA)
+        print(f"[carla_sim] truck {2 * ext.x:.1f} x {2 * ext.y:.1f} m at {t_right:.1f} m right; "
+              f"pedestrian {ped_fwd - t_fwd - ext.x:.1f} m in front of it; trigger {self.trigger:.1f} m")
         # junction footprint along the ego road -> RSU on the far-left corner, aimed at the pedestrian
         jb, fv = self.junction.bounding_box, self.spawn_tf.get_forward_vector()
         jlen = 2 * (abs(fv.x) * jb.extent.x + abs(fv.y) * jb.extent.y)
