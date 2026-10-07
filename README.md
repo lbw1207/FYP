@@ -23,8 +23,8 @@ Two blind-spot scenarios, matching the two track layouts in the project descript
 - **`intersection` (default) - blind intersection.** The ego vehicle drives straight towards a
   4-way junction. A delivery truck (the simulated occluder - a static box in the mock, a parked
   truck with physics off in CARLA) is parked at the kerb just before the zebra crossing, and a
-  pedestrian waiting in front of it steps out across the road. An overhead RSU on the far corner of
-  the junction sees the pedestrian the whole time; the ego camera only sees them once they are
+  pedestrian waiting in front of it steps out across the road. An overhead RSU across the road sees the
+  pedestrian the whole time; the ego camera only sees them once they are
   already in the lane.
 - **`parked_truck` - two-lane street.** A truck parked on the roadside hides a pedestrian on the
   kerb; the RSU is mounted on the opposite side of the road.
@@ -104,8 +104,8 @@ Then open **http://localhost:8000**. Useful flags:
 
 `carla_sim.py` spawns the ego vehicle, the parked truck, the hidden pedestrian and the RSU camera
 automatically. For `--scenario intersection` it looks for a straight road that runs into a junction
-45-90 m ahead, parks the truck before the crossing, puts the RSU on the far corner aimed at the
-pedestrian, and tells the Traffic Manager to go straight and ignore traffic lights. You don't need to
+45-90 m ahead, parks the truck before the crossing, puts the RSU on a 6 m pole across the road about 12 m from
+the pedestrian (aimed straight at them, so YOLO sees a usefully large person), and tells the Traffic Manager to go straight and ignore traffic lights. You don't need to
 build a custom CARLA map or place actors by hand; if the chosen junction looks wrong, pass another
 `--spawn-index` or `--town`. The intersection geometry (`JX_*` constants, in particular
 `JX_TRIGGER_DIST`) is at the top of `carla_sim.py`.

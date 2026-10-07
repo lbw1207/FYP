@@ -32,7 +32,7 @@ except ImportError:
     sys.exit("The 'carla' Python package is not installed:  pip install carla==0.9.15  (match your server version)")
 
 from dashboard_server import DashboardServer
-from detector import Detector, to_b64_jpeg
+from detector import DEFAULT_CLASSES, Detector, to_b64_jpeg
 from fusion import group_of, pixel_to_ground, to_ego_frame
 from pipeline import Pipeline
 from transport import make_transport
@@ -49,6 +49,10 @@ JX_MIN_DIST, JX_MAX_DIST = 45.0, 90.0   # how far ahead of the ego spawn the jun
 JX_CROSSING_BACK = 1.5      # truck front / crossing this far before the junction entry [m]
 JX_TRUCK_KERB = 1.4         # truck centre this far right of the road's right edge (half on the kerb)
 JX_PED_GAPS = (0.6, 0.9, 1.2)   # pedestrian this far in front of the truck's nose (first that spawns) [m]
+JX_RSU_AHEAD = 6.0          # RSU pole this far beyond the pedestrian along the road [m]
+JX_RSU_SIDE = 2.5           # ... and this far left of the road's left edge [m]
+JX_RSU_HEIGHT = 6.0         # ... at this height; it is aimed straight at the pedestrian. Keep it close:
+                            # from 20+ m a pedestrian is only a few pixels tall and YOLO misses them
 JX_PED_SPEED = 2.5          # the pedestrian steps out briskly [m/s] - a slow walk gives the onboard camera time
 JX_TRIGGER_DIST = None      # step out when the ego is this far before the pedestrian (along the road) [m];
                             # None = derived so the pedestrian reaches the ego lane exactly when a car still
@@ -215,11 +219,13 @@ class Scenario:
         dx, dy = loc.x - o.x, loc.y - o.y
         return dx * f.x + dy * f.y, dx * r.x + dy * r.y
 
-    def _rsu(self, fwd, right, look_at=None):
-        tf = self._offset(self.spawn_tf, fwd=fwd, right=right, up=RSU_HEIGHT, yaw=self.road_yaw + 90.0)
-        if look_at is not None:                               # aim the RSU at the blind spot
-            tf.rotation.yaw = math.degrees(math.atan2(look_at.y - tf.location.y, look_at.x - tf.location.x))
+    def _rsu(self, fwd, right, look_at=None, height=RSU_HEIGHT):
+        tf = self._offset(self.spawn_tf, fwd=fwd, right=right, up=height, yaw=self.road_yaw + 90.0)
         tf.rotation.pitch = RSU_PITCH
+        if look_at is not None:                               # aim the RSU straight at the blind spot
+            dx, dy = look_at.x - tf.location.x, look_at.y - tf.location.y
+            tf.rotation.yaw = math.degrees(math.atan2(dy, dx))
+            tf.rotation.pitch = -math.degrees(math.atan2(tf.location.z - look_at.z, math.hypot(dx, dy)))
         self.rsu_cam = self._camera(tf, None, self.rsu_q)
         self.rsu_info = {"x": tf.location.x, "y": tf.location.y}
 
@@ -309,11 +315,14 @@ class Scenario:
                                            + JX_TRIGGER_EXTRA)
         print(f"[carla_sim] truck {2 * ext.x:.1f} x {2 * ext.y:.1f} m at {t_right:.1f} m right; "
               f"pedestrian {ped_fwd - t_fwd - ext.x:.1f} m in front of it; trigger {self.trigger:.1f} m")
-        # junction footprint along the ego road -> RSU on the far-left corner, aimed at the pedestrian
+        # junction footprint along the ego road (for the dashboard); RSU on the left, aimed at the pedestrian
         jb, fv = self.junction.bounding_box, self.spawn_tf.get_forward_vector()
         jlen = 2 * (abs(fv.x) * jb.extent.x + abs(fv.y) * jb.extent.y)
         self.world.tick()                                     # let the pedestrian settle before aiming at it
-        self._rsu(self.jx_dist + jlen + 2.0, -(left_edge + 3.0), look_at=self.ped.get_location())
+        self._rsu(cross_fwd + JX_RSU_AHEAD, -(left_edge + JX_RSU_SIDE), look_at=self.ped.get_location(),
+                  height=JX_RSU_HEIGHT)
+        rsu_d = math.hypot(JX_RSU_AHEAD, t_right + left_edge + JX_RSU_SIDE)
+        print(f"[carla_sim] RSU {rsu_d:.1f} m from the pedestrian, {JX_RSU_HEIGHT:.0f} m high, aimed at them")
         self.junction_info = {"x": jb.location.x, "y": jb.location.y, "yaw": self.road_yaw + 90.0, "width": jlen}
         c = self._offset(self.spawn_tf, fwd=cross_fwd).location
         self.crossing_info = {"x": c.x, "y": c.y, "width": 3.0}
@@ -445,7 +454,8 @@ def main():
     ap.add_argument("--mqtt-host", default="127.0.0.1")
     a = ap.parse_args()
 
-    detector = Detector(a.weights, a.conf, a.imgsz, a.device, a.classes)
+    # keep only road users - without a class list YOLO reports all 80 COCO classes (e.g. "toilet")
+    detector = Detector(a.weights, a.conf, a.imgsz, a.device, a.classes or DEFAULT_CLASSES)
     pipe = Pipeline(make_transport(a.transport, a.mqtt_host))
     flags = {"reset": False}
 
