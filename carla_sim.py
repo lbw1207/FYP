@@ -52,6 +52,7 @@ JX_TRUCK_KERB = 1.4         # truck centre this far right of the road's right ed
 JX_PED_KERB = 0.8           # pedestrian this far right of the road's right edge
 JX_TRIGGER_DIST = 19.0      # pedestrian steps out when the ego is this close [m] - tune for your town/speed
 EGO_CAM = carla.Transform(carla.Location(x=1.5, z=1.6))
+SLOW_FACTOR = 0.4           # SLOW = drive at 40 % of --target-speed (same as the mock)
 SCENARIO_NAMES = {"intersection": "Blind intersection - pedestrian on crossing hidden by parked delivery truck",
                   "parked_truck": "Blind spot - pedestrian behind parked truck"}
 TRUCK_BPS = ("vehicle.carlamotors.european_hgv", "vehicle.carlamotors.carlacola", "vehicle.carlamotors.firetruck",
@@ -236,8 +237,11 @@ class Scenario:
 
         # autopilot for the ego, our pipeline is the only thing allowed to react to pedestrians
         self.ego.set_autopilot(True, self.tm.get_port())
+        # The Traffic Manager must not brake on its own, or the car slows down even with cooperative
+        # perception OFF: it ignores walkers, lights, signs and the parked truck (which sits at the lane edge).
         self.tm.ignore_walkers_percentage(self.ego, 100.0)
-        self.tm.ignore_lights_percentage(self.ego, 100.0)     # a red light would hide the effect we demo
+        self.tm.ignore_vehicles_percentage(self.ego, 100.0)
+        self.tm.ignore_lights_percentage(self.ego, 100.0)
         self.tm.ignore_signs_percentage(self.ego, 100.0)
         self.tm.auto_lane_change(self.ego, False)
         if hasattr(self.tm, "set_route"):
@@ -247,6 +251,7 @@ class Scenario:
         else:
             self.tm.vehicle_percentage_speed_difference(self.ego, 0.0)
         self.autopilot = True
+        self.reached_speed, self.slow_since, self.tm_slow_logged = False, None, False
 
     def _build_parked_truck(self):
         self.truck, truck_tf, ext = self._truck(TRUCK_DIST, (2.0, 1.6, 1.2, 0.8))
@@ -340,9 +345,25 @@ class Scenario:
         if not self.autopilot:
             self.ego.set_autopilot(True, self.tm.get_port())
             self.autopilot = True
-        self.tm.vehicle_percentage_speed_difference(self.ego, 55.0 if state == "SLOW" else 0.0)
-        if state == "CLEAR" and hasattr(self.tm, "set_desired_speed"):
-            self.tm.set_desired_speed(self.ego, self.args.target_speed)
+        factor = SLOW_FACTOR if state == "SLOW" else 1.0
+        if hasattr(self.tm, "set_desired_speed"):             # a desired speed overrides the percentage below
+            self.tm.set_desired_speed(self.ego, self.args.target_speed * factor)
+        else:
+            self.tm.vehicle_percentage_speed_difference(self.ego, (1.0 - factor) * 100.0)
+
+    def autopilot_slowdown(self, state, speed):
+        """True (once per run) if the car is clearly slower than the target while Perceptinet says CLEAR,
+        i.e. CARLA's own autopilot is braking - so a slowdown is never wrongly credited to the RSU."""
+        target = self.args.target_speed / 3.6
+        self.reached_speed = self.reached_speed or speed > 0.9 * target
+        if not (self.reached_speed and state == "CLEAR" and speed < 0.7 * target):
+            self.slow_since = None
+            return False
+        self.slow_since = self.slow_since or time.time()
+        if not self.tm_slow_logged and time.time() - self.slow_since > 1.0:
+            self.tm_slow_logged = True
+            return True
+        return False
 
 
 def run_detection(detector, image, ground_z, exclude_near=None):
@@ -445,6 +466,8 @@ def main():
             time.sleep(0.001)                                       # give the UDP/MQTT thread a moment
             res = pipe.vehicle_step(sim_t, ego, onboard)
             scn.apply_decision(res["decision"]["state"])
+            if scn.autopilot_slowdown(res["decision"]["state"], ego["speed"]):
+                pipe.note(sim_t, "warn", "Ego slowed by the CARLA autopilot, not by Perceptinet (decision is CLEAR)")
 
             now = time.time()
             fps = 0.9 * fps + 0.1 / max(now - t_prev, 1e-3)

@@ -110,6 +110,10 @@ class Pipeline:
     def _event(self, t, level, msg):
         self.events.append({"t": round(t, 1), "level": level, "msg": msg})
 
+    def note(self, t, level, msg):
+        """Add a line to the dashboard event log (for simulator-specific diagnostics)."""
+        self._event(t, level, msg)
+
     def collision(self, t):
         self.collisions += 1
         self._event(t, "alert", "COLLISION with pedestrian")
