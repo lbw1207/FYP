@@ -117,7 +117,10 @@ class DecisionConfig:
     slow_extra: float = 8.0
     stop_half: float = 2.0      # half-width of the STOP corridor [m]
     slow_half: float = 4.0      # half-width of the SLOW corridor (kerb-side pedestrians) [m]
+    caution_half: float = 8.0   # VRUs this close to the path (e.g. waiting at a crossing) -> SLOW, unless walking away
     hold_s: float = 1.0         # keep STOP this long after the hazard clears (sim seconds)
+    horizon: float = 4.0        # predict crossing VRUs at most this far ahead [s]
+    min_cross_speed: float = 0.6  # lateral speed [m/s] above which a VRU counts as crossing
 
 
 class Decider:
@@ -135,18 +138,30 @@ class Decider:
         slow_dist = stop_dist * c.slow_factor + c.slow_extra
         latched = self.state == "STOP"
         raw, hazard = "CLEAR", None
+        yaw = math.radians(ego["yaw"])
         for o in objects:
             if group_of(o["cls"]) != "vru":
                 continue
             f, l = to_ego_frame(ego["x"], ego["y"], ego["yaw"], o["x"], o["y"])
-            if f <= 0 or abs(l) > c.slow_half or f > slow_dist:
+            if f <= 0 or f > slow_dist:
                 continue
-            in_stop = abs(l) <= c.stop_half and (f <= stop_dist or (latched and f <= slow_dist))
+            # trajectory prediction: where will a crossing VRU be by the time the ego reaches it?
+            lat, crossing = abs(l), False
+            vl = -o.get("vx", 0.0) * math.sin(yaw) + o.get("vy", 0.0) * math.cos(yaw)
+            if abs(vl) > c.min_cross_speed and l * vl < 0:
+                l_pred = l + vl * min(f / max(v, 1.0), c.horizon)
+                lat_pred = 0.0 if l * l_pred <= 0 else abs(l_pred)
+                if lat_pred < lat:
+                    lat, crossing = lat_pred, True
+            walking_away = abs(vl) > c.min_cross_speed and l * vl > 0
+            if lat > c.slow_half and (lat > c.caution_half or walking_away):
+                continue
+            in_stop = lat <= c.stop_half and (f <= stop_dist or (latched and f <= slow_dist))
             level = "STOP" if in_stop else "SLOW"
             better = hazard is None or (level == "STOP" and hazard["level"] != "STOP") or \
                      (level == hazard["level"] and f < hazard["f"])
             if better:
-                hazard = {"level": level, "f": f, "l": l, "cls": o["cls"], "src": o["src"]}
+                hazard = {"level": level, "f": f, "l": l, "cls": o["cls"], "src": o["src"], "crossing": crossing}
         if hazard:
             raw = hazard["level"]
         if raw == "STOP":
@@ -158,7 +173,8 @@ class Decider:
         if hazard:
             how = {"rsu": "seen by RSU only", "onboard": "seen onboard",
                    "both": "seen by RSU + onboard"}[hazard["src"]]
-            reason = f'{hazard["cls"].capitalize()} {hazard["f"]:.0f} m ahead ({how})'
+            reason = f'{hazard["cls"].capitalize()} {"crossing " if hazard["crossing"] else ""}' \
+                     f'{hazard["f"]:.0f} m ahead ({how})'
         elif raw == "STOP":
             reason = "Holding stop while the path clears"
         return {"state": raw, "reason": reason, "hazard": hazard,
@@ -181,6 +197,77 @@ class DelayBuffer:
         self.pending.append(msg)
 
     def update(self, sim_t, delay_s):
-        while self.pending and sim_t >= self.pending[0]["t_sim"] + delay_s:
+        while self.pending and sim_t >= self.pending[0]["timestamp"] + delay_s:
             self.latest = self.pending.popleft()
         return self.latest
+
+
+# ----------------------------------------------------------------------------------
+# Tracking: associates fused detections across steps, so the dashboard knows which
+# objects are hidden from the onboard camera, since when, and where they are heading
+# ----------------------------------------------------------------------------------
+class Track:
+    def __init__(self, tid, group):
+        self.id, self.group, self.cls = tid, group, None
+        self.x = self.y = None
+        self.conf, self.last_t = 0.0, None
+        self.first_onb = self.last_onb = self.first_rsu = self.last_rsu = None
+        self.hist = deque(maxlen=15)            # (t, x, y) each time the measured position changes
+
+    def observe(self, t, o):
+        if self.x is None or (o["x"], o["y"]) != (self.x, self.y):
+            self.hist.append((t, o["x"], o["y"]))
+        self.cls, self.x, self.y, self.conf, self.last_t = o["cls"], o["x"], o["y"], o["conf"], t
+        if o["src"] in ("onboard", "both"):
+            self.last_onb = t
+            self.first_onb = t if self.first_onb is None else self.first_onb
+        if o["src"] in ("rsu", "both"):
+            self.last_rsu = t
+            self.first_rsu = t if self.first_rsu is None else self.first_rsu
+
+    def hidden(self, t, grace=0.5):
+        """Currently reported by the RSU, but not seen by the onboard camera for `grace` seconds."""
+        return self.last_rsu is not None and t - self.last_rsu <= grace and \
+            (self.last_onb is None or t - self.last_onb > grace)
+
+    def velocity(self):
+        """World-frame (vx, vy) from the oldest vs. newest few positions (averages out detector noise)."""
+        if len(self.hist) < 10:
+            return 0.0, 0.0
+        k = len(self.hist) // 3
+        a, b = list(self.hist)[:k], list(self.hist)[-k:]
+        mean = lambda pts, i: sum(p[i] for p in pts) / len(pts)
+        dt = mean(b, 0) - mean(a, 0)
+        if dt < 0.6:
+            return 0.0, 0.0
+        return (mean(b, 1) - mean(a, 1)) / dt, (mean(b, 2) - mean(a, 2)) / dt
+
+
+class Tracker:
+    def __init__(self, gate=3.0, ttl=1.0):
+        self.gate, self.ttl = gate, ttl
+        self.reset()
+
+    def reset(self):
+        self.tracks, self._next = [], 1
+
+    def update(self, t, fused):
+        """Nearest-neighbour association (same class group). Tags each fused detection with "tid"."""
+        free = list(self.tracks)
+        for o in fused:
+            g, best, best_d = group_of(o["cls"]), None, self.gate
+            for tr in free:
+                d = math.hypot(tr.x - o["x"], tr.y - o["y"])
+                if tr.group == g and d < best_d:
+                    best, best_d = tr, d
+            if best is None:
+                best = Track(self._next, g)
+                self._next += 1
+                self.tracks.append(best)
+            else:
+                free.remove(best)
+            best.observe(t, o)
+            o["tid"] = best.id
+            o["vx"], o["vy"] = best.velocity()
+        self.tracks = [tr for tr in self.tracks if t - tr.last_t <= self.ttl]
+        return self.tracks

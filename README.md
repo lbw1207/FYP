@@ -17,17 +17,56 @@ over unchanged to the CARLA run — only the source of frames and detections dif
 
 ## What it demonstrates
 
-The blind-spot scenario from your slides: a truck parked on the roadside occludes a pedestrian from
-the ego vehicle's onboard camera. An RSU camera (mounted overhead, on the opposite side of the
-road) can see the pedestrian the whole time. The RSU's detector runs locally and sends **only the
-detected object's class and world coordinates** over the network (UDP or MQTT) — never the image
-itself — which is the "semantic communication, not raw video" point from your System Architecture
-slide. The vehicle fuses that with its own onboard detections and reacts before the hazard is ever
-visible on its own camera.
+Two blind-spot scenarios, matching the two track layouts in the project description
+(choose with `--scenario`, in both `mock_sim.py` and `carla_sim.py`):
 
-The dashboard's **Cooperative perception** toggle lets you switch RSU sharing on/off live, and the
-**Injected V2I delay** slider lets you demonstrate what happens if the link is too slow — both are
-the exact trade-offs your supervisor raised about latency.
+- **`intersection` (default) - blind intersection.** The ego vehicle drives straight towards a
+  4-way junction. A delivery truck (the simulated occluder - a static box in the mock, a parked
+  truck with physics off in CARLA) is parked at the kerb just before the zebra crossing, and a
+  pedestrian waiting in front of it steps out across the road. An overhead RSU on the far corner of
+  the junction sees the pedestrian the whole time; the ego camera only sees them once they are
+  already in the lane.
+- **`parked_truck` - two-lane street.** A truck parked on the roadside hides a pedestrian on the
+  kerb; the RSU is mounted on the opposite side of the road.
+
+The RSU's detector runs locally and sends **only the detected objects' class and world coordinates**
+over the network (UDP or MQTT) - never the image itself. The vehicle fuses that with its own onboard
+detections, tracks the objects, and predicts whether a pedestrian is about to cross its path.
+A pedestrian the RSU reports near the road (e.g. waiting at the crossing behind the truck) already
+triggers SLOW, so the vehicle is slow and can stop by the time the pedestrian appears.
+
+In the mock, with the default settings: **cooperative OFF -> late braking and a collision; cooperative
+ON -> SLOW about 33 m before the crossing and a clean stop.**
+
+The **Cooperative Perception** toggle lets you switch RSU sharing on/off live, and the **Network
+delay** slider lets you demonstrate what happens if the link is too slow.
+
+## Driver Mode vs. System Mode
+
+The same live data is shown two ways; switch with the buttons in the header, the `D` / `S` keys, or
+open `http://localhost:8000/#driver` and `http://localhost:8000/#system` in two windows side by side.
+
+- **Driver Mode** answers "is there a danger ahead that I cannot see, and what should I do?" It shows
+  only the ego camera view, a large **CLEAR / SLOW / STOP** action, and alerts such as *Pedestrian
+  approaching · 18 m*. Objects that only the RSU can see are projected into the driver's view as a
+  dashed "hidden" outline (virtual perception), and the alert says how long the roadside unit has
+  already seen it — or, once the camera catches up, how many seconds earlier the RSU warned. No FPS,
+  latency, confidences or JSON.
+- **System Mode** explains how the system works: status bar (Cooperative Perception ON/OFF, active
+  RSUs, V2I status, scenario, simulated network delay), the ego camera with YOLO boxes, the RSU camera
+  with a "Ego camera: NOT visible / RSU: detected" comparison, the fused bird's-eye view (detected by
+  ego / RSU / both, occluded objects), evaluation metrics (FPS, V2I latency, fusion processing time,
+  detection confidence, object counts, ego vs. RSU detection time and **warning lead time**), the last
+  V2I message, controls and an event log.
+
+Keyboard: `C` toggles cooperative perception, `R` restarts the scenario.
+
+The RSU sends **only object-level data**, never video:
+
+```json
+{"rsu_id": "RSU-01", "seq": 42, "timestamp": 10.1,
+ "objects": [{"type": "person", "position": [48.6, 2.9], "confidence": 0.91}]}
+```
 
 ## Quick start (no CARLA needed)
 
@@ -40,7 +79,7 @@ Then open **http://localhost:8000**. Toggle "Cooperative perception" off and res
 watch the onboard-only run brake too late (or not at all) while the cooperative run slows down well
 in advance.
 
-Useful flags: `--speed 2` runs the scenario faster than real time; `--loop` restarts it
+Useful flags: `--scenario parked_truck` switches scenario; `--speed 2` runs the scenario faster than real time; `--loop` restarts it
 automatically; `--target-speed 40` changes the ego vehicle's cruising speed (km/h).
 
 ## Running against CARLA + your trained YOLO model
@@ -63,9 +102,13 @@ Then open **http://localhost:8000**. Useful flags:
 - `--transport mqtt --mqtt-host <broker>` — use MQTT instead of UDP for the V2I link (needs
   `pip install paho-mqtt` and a running broker, e.g. `mosquitto`)
 
-`carla_sim.py` spawns the ego vehicle, a parked truck, a pedestrian hidden behind it, and the RSU
-camera, all automatically, on a straight stretch of road it finds for you — you don't need to build
-a custom CARLA map or place actors by hand.
+`carla_sim.py` spawns the ego vehicle, the parked truck, the hidden pedestrian and the RSU camera
+automatically. For `--scenario intersection` it looks for a straight road that runs into a junction
+45-90 m ahead, parks the truck before the crossing, puts the RSU on the far corner aimed at the
+pedestrian, and tells the Traffic Manager to go straight and ignore traffic lights. You don't need to
+build a custom CARLA map or place actors by hand; if the chosen junction looks wrong, pass another
+`--spawn-index` or `--town`. The intersection geometry (`JX_*` constants, in particular
+`JX_TRIGGER_DIST`) is at the top of `carla_sim.py`.
 
 ## Files
 
@@ -85,9 +128,9 @@ a custom CARLA map or place actors by hand.
 - If your CARLA-trained model uses class names other than COCO's (`person`, `car`, `truck`, ...),
   update the `GROUPS` dict at the top of `fusion.py` so the fusion/decision logic still knows which
   classes count as a "vulnerable road user" (`vru`) vs. a `vehicle`.
-- Scenario geometry (truck distance, RSU height/angle, pedestrian trigger distance, etc.) is defined
-  as named constants at the top of `carla_sim.py` / `mock_sim.py` — tune those rather than digging
-  into the logic below them.
+- Scenario geometry (blocker position, RSU height/angle, pedestrian trigger distance, etc.) is defined
+  as named constants at the top of `carla_sim.py` and in the `SCENARIOS` dict of `mock_sim.py` — tune
+  those rather than digging into the logic below them.
 - The decision thresholds (braking distance, safety margins, corridor widths) are in
   `fusion.DecisionConfig` — pass a custom one into `Decider(cfg)` if you want to tune stopping
   behaviour without touching the decision algorithm itself.

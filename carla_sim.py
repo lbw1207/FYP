@@ -2,12 +2,15 @@
 """
 Perceptinet - CARLA runner (written against the CARLA 0.9.14-0.9.16 Python API).
 
-Blind-spot scenario: an ego vehicle drives down a straight road, a parked truck hides a pedestrian
-standing on the kerb behind it. An overhead RSU camera on the opposite side of the road sees the
-pedestrian; the ego camera cannot. Both feeds go through YOLO, detections are projected onto the
-ground plane (shared world grid), the RSU sends only class + coordinates over the V2I link, the
-vehicle fuses them, and the decision (CLEAR / SLOW / STOP) is executed in CARLA and shown live
-on the dashboard.
+Two blind-spot scenarios (--scenario):
+  intersection  (default) the ego drives straight towards a junction. A delivery truck (simulated, physics
+                off) is parked half on the kerb just before the crossing, and a pedestrian waiting in front
+                of it steps out across the road. An overhead RSU on the far corner of the junction sees
+                the pedestrian; the ego camera cannot.
+  parked_truck  the original straight-road version: a parked truck hides a pedestrian on the kerb.
+Both feeds go through YOLO, detections are projected onto the ground plane (shared world grid), the
+RSU sends only class + coordinates over the V2I link, the vehicle fuses them, and the decision
+(CLEAR / SLOW / STOP) is executed in CARLA and shown live on the dashboard.
 
     1. start the CARLA server            (./CarlaUE4.sh   or   CarlaUE4.exe)
     2. python carla_sim.py --weights yolov8n.pt          # or your CARLA-trained best.pt
@@ -21,7 +24,6 @@ import sys
 import time
 from collections import deque
 
-import cv2
 import numpy as np
 
 try:
@@ -30,18 +32,30 @@ except ImportError:
     sys.exit("The 'carla' Python package is not installed:  pip install carla==0.9.15  (match your server version)")
 
 from dashboard_server import DashboardServer
-from detector import Detector, draw, to_b64_jpeg
+from detector import Detector, to_b64_jpeg
 from fusion import group_of, pixel_to_ground, to_ego_frame
 from pipeline import Pipeline
 from transport import make_transport
 
 # ------------------------------------------------------------------ scenario geometry
+# parked_truck scenario
 TRUCK_DIST = 42.0           # truck centre, metres ahead of the ego spawn
 PED_LATERAL = 3.1           # pedestrian offset to the right of the lane centre (on the kerb / verge)
 TRIGGER_DIST = 22.0         # pedestrian starts crossing when the ego is this close [m]
 WALK_SPEED, WALK_TIME = 1.5, 6.5
 RSU_SIDE_OFFSET, RSU_HEIGHT, RSU_PITCH = 6.5, 8.0, -35.0     # RSU pole on the LEFT of the road
+# intersection scenario (distances along the ego road, relative to where the junction starts)
+JX_MIN_DIST, JX_MAX_DIST = 45.0, 90.0   # how far ahead of the ego spawn the junction may be
+JX_CROSSING_BACK = 1.5      # pedestrian / crossing this far before the junction entry [m]
+JX_TRUCK_GAP = 1.0          # gap between the truck's front and the pedestrian [m]
+JX_TRUCK_KERB = 1.4         # truck centre this far right of the road's right edge (half on the kerb)
+JX_PED_KERB = 0.8           # pedestrian this far right of the road's right edge
+JX_TRIGGER_DIST = 19.0      # pedestrian steps out when the ego is this close [m] - tune for your town/speed
 EGO_CAM = carla.Transform(carla.Location(x=1.5, z=1.6))
+SCENARIO_NAMES = {"intersection": "Blind intersection - pedestrian on crossing hidden by parked delivery truck",
+                  "parked_truck": "Blind spot - pedestrian behind parked truck"}
+TRUCK_BPS = ("vehicle.carlamotors.european_hgv", "vehicle.carlamotors.carlacola", "vehicle.carlamotors.firetruck",
+             "vehicle.mitsubishi.fusorosa")
 
 
 class SensorQueue:
@@ -89,12 +103,54 @@ def find_straight_spawn(cmap, need=95.0, index=-1):
     raise RuntimeError("no straight road segment found - try --town Town05 or pass --spawn-index")
 
 
+def find_junction_spawn(cmap, index=-1, lo=JX_MIN_DIST, hi=JX_MAX_DIST):
+    """A spawn point on a straight road that reaches a junction after lo..hi metres.
+    Returns (spawn transform, distance to the junction entry, last waypoint before the junction, junction)."""
+    pts = cmap.get_spawn_points()
+    order = [pts[index]] if index >= 0 else random.sample(pts, len(pts))
+    for tr in order:
+        wp, dist = cmap.get_waypoint(tr.location), 0.0
+        yaw0 = wp.transform.rotation.yaw
+        if wp.is_junction:
+            continue
+        while dist <= hi:
+            nxt = wp.next(2.0)
+            if not nxt or abs((nxt[0].transform.rotation.yaw - yaw0 + 180) % 360 - 180) > 4.0:
+                break
+            if nxt[0].is_junction:
+                if dist >= lo:
+                    return tr, dist, wp, nxt[0].get_junction()
+                break
+            if len(nxt) != 1:
+                break
+            wp, dist = nxt[0], dist + 2.0
+    raise RuntimeError("no straight road leading into a junction found - try another --town or --spawn-index")
+
+
+def road_edges(wp):
+    """Distance from the lane centre to the right / left edge of the drivable road [m]."""
+    def walk(first_step):
+        edge, w, seen = wp.lane_width / 2.0, wp, {wp.lane_id}
+        for _ in range(8):
+            # after crossing the centre line the opposite lanes' "right" points further away from us
+            nxt = first_step(w) if w.lane_id * wp.lane_id > 0 else w.get_right_lane()
+            if nxt is None or nxt.lane_type != carla.LaneType.Driving or nxt.lane_id in seen:
+                break
+            seen.add(nxt.lane_id)
+            edge, w = edge + nxt.lane_width, nxt
+        return edge
+    return walk(lambda w: w.get_right_lane()), walk(lambda w: w.get_left_lane())
+
+
 class Scenario:
     def __init__(self, world, tm, args):
         self.world, self.tm, self.args = world, tm, args
         self.cmap, self.actors = world.get_map(), []
         self.lib = world.get_blueprint_library()
-        self.spawn_tf = find_straight_spawn(self.cmap, index=args.spawn_index)   # fixed for restarts
+        if args.scenario == "intersection":                                       # fixed for restarts
+            self.spawn_tf, self.jx_dist, self.jx_wp, self.junction = find_junction_spawn(self.cmap, args.spawn_index)
+        else:
+            self.spawn_tf = find_straight_spawn(self.cmap, index=args.spawn_index)
         self.build()
 
     # -------------------------------------------------------------- construction
@@ -110,9 +166,36 @@ class Scenario:
                              tf.location.z + up)
         return carla.Transform(loc, carla.Rotation(yaw=tf.rotation.yaw if yaw is None else yaw))
 
+    def _truck(self, fwd, rights):
+        """Parked truck (the simulated occluder): physics off so it stays exactly where we put it."""
+        bp = next((found[0] for found in (self.lib.filter(n) for n in TRUCK_BPS) if found), None)
+        for right in rights:                                  # step until the spawn succeeds
+            tf = self._offset(self.spawn_tf, fwd=fwd, right=right, up=0.4)
+            truck = self._spawn(bp, tf)
+            if truck:
+                truck.set_simulate_physics(False)
+                ext = truck.bounding_box.extent
+                return truck, tf, ext
+        raise RuntimeError("could not spawn the parked truck - try another --spawn-index")
+
+    def _pedestrian(self, fwd, right):
+        bp = self.lib.filter("walker.pedestrian.0001")[0]
+        for dz in (0.6, 1.0, 1.5):
+            ped = self._spawn(bp, self._offset(self.spawn_tf, fwd=fwd, right=right, up=dz))
+            if ped:
+                return ped
+        raise RuntimeError("could not spawn the pedestrian")
+
+    def _rsu(self, fwd, right, look_at=None):
+        tf = self._offset(self.spawn_tf, fwd=fwd, right=right, up=RSU_HEIGHT, yaw=self.road_yaw + 90.0)
+        if look_at is not None:                               # aim the RSU at the blind spot
+            tf.rotation.yaw = math.degrees(math.atan2(look_at.y - tf.location.y, look_at.x - tf.location.x))
+        tf.rotation.pitch = RSU_PITCH
+        self.rsu_cam = self._camera(tf, None, self.rsu_q)
+        self.rsu_info = {"x": tf.location.x, "y": tf.location.y}
+
     def build(self):
-        w, a = self.world, self.args
-        road_tf = self.spawn_tf
+        a, road_tf = self.args, self.spawn_tf
         self.ground_z = self.cmap.get_waypoint(road_tf.location).transform.location.z
         self.road_yaw = road_tf.rotation.yaw
         self.t_start = None
@@ -130,56 +213,63 @@ class Scenario:
         col = self._spawn(self.lib.find("sensor.other.collision"), carla.Transform(), attach_to=self.ego)
         col.listen(lambda ev: self.collisions.append(ev.other_actor.type_id))
 
-        # parked truck (the occluder) ----------------------------------------------
-        truck_bp = None
-        for name in ("vehicle.carlamotors.european_hgv", "vehicle.carlamotors.carlacola", "vehicle.carlamotors.firetruck",
-                     "vehicle.mitsubishi.fusorosa"):
-            found = self.lib.filter(name)
-            if found:
-                truck_bp = found[0]
-                break
-        self.truck, truck_tf = None, None
-        for right in (2.0, 1.6, 1.2, 0.8):                    # step towards the road until the spawn succeeds
-            truck_tf = self._offset(road_tf, fwd=TRUCK_DIST, right=right, up=0.4)
-            self.truck = self._spawn(truck_bp, truck_tf)
-            if self.truck:
-                break
-        if self.truck is None:
-            raise RuntimeError("could not spawn the parked truck - try another --spawn-index")
-        self.truck.set_simulate_physics(False)
-        ext = self.truck.bounding_box.extent
-        self.truck_info = {"x": truck_tf.location.x, "y": truck_tf.location.y, "yaw": self.road_yaw,
-                           "length": 2 * ext.x, "width": 2 * ext.y}
-
-        # pedestrian, hidden just behind the truck's rear end ----------------------
-        ped_fwd = TRUCK_DIST + ext.x + 1.6
-        ped_bp = self.lib.filter("walker.pedestrian.0001")[0]
-        self.ped = None
-        for dz in (0.6, 1.0, 1.5):
-            self.ped = self._spawn(ped_bp, self._offset(road_tf, fwd=ped_fwd, right=PED_LATERAL, up=dz))
-            if self.ped:
-                break
-        if self.ped is None:
-            raise RuntimeError("could not spawn the pedestrian")
+        self.junction_info = self.crossing_info = None
+        if a.scenario == "intersection":
+            self._build_intersection()
+        else:
+            self._build_parked_truck()
         self.ped_dir = road_tf.get_right_vector()             # crossing = towards the LEFT (-right)
         self.walking, self.walk_t = False, 0.0
-
-        # RSU camera on the opposite side, looking across the road and behind the truck ---
-        rsu_tf = self._offset(road_tf, fwd=TRUCK_DIST + ext.x * 0.6, right=-RSU_SIDE_OFFSET, up=RSU_HEIGHT,
-                              yaw=self.road_yaw + 90.0)
-        rsu_tf.rotation.pitch = RSU_PITCH
-        self.rsu_cam = self._camera(rsu_tf, None, self.rsu_q)
-        self.rsu_info = {"x": rsu_tf.location.x, "y": rsu_tf.location.y}
 
         # autopilot for the ego, our pipeline is the only thing allowed to react to pedestrians
         self.ego.set_autopilot(True, self.tm.get_port())
         self.tm.ignore_walkers_percentage(self.ego, 100.0)
+        self.tm.ignore_lights_percentage(self.ego, 100.0)     # a red light would hide the effect we demo
+        self.tm.ignore_signs_percentage(self.ego, 100.0)
         self.tm.auto_lane_change(self.ego, False)
+        if hasattr(self.tm, "set_route"):
+            self.tm.set_route(self.ego, ["Straight"] * 3)     # go straight through the junction
         if hasattr(self.tm, "set_desired_speed"):
             self.tm.set_desired_speed(self.ego, a.target_speed)
         else:
             self.tm.vehicle_percentage_speed_difference(self.ego, 0.0)
         self.autopilot = True
+
+    def _build_parked_truck(self):
+        self.truck, truck_tf, ext = self._truck(TRUCK_DIST, (2.0, 1.6, 1.2, 0.8))
+        self.blocker_info = {"x": truck_tf.location.x, "y": truck_tf.location.y, "yaw": self.road_yaw,
+                             "length": 2 * ext.x, "width": 2 * ext.y, "label": "parked truck"}
+        # pedestrian, hidden just behind the truck's rear end
+        self.ped = self._pedestrian(TRUCK_DIST + ext.x + 1.6, PED_LATERAL)
+        self.trigger, self.walk_time = TRIGGER_DIST, WALK_TIME
+        # RSU camera on the opposite side, looking across the road and behind the truck
+        self._rsu(TRUCK_DIST + ext.x * 0.6, -RSU_SIDE_OFFSET)
+
+    def _build_intersection(self):
+        right_edge, left_edge = road_edges(self.jx_wp)
+        cross_fwd = self.jx_dist - JX_CROSSING_BACK
+        # delivery truck parked half on the kerb, its front just short of the crossing
+        half_len = 4.5                                        # roughly half a truck; the real extent is reported
+        self.truck, truck_tf, ext = self._truck(cross_fwd - JX_TRUCK_GAP - half_len,
+                                                [right_edge + JX_TRUCK_KERB - d for d in (0.0, 0.4, 0.8, 1.2, 1.6)])
+        self.blocker_info = {"x": truck_tf.location.x, "y": truck_tf.location.y, "yaw": self.road_yaw,
+                             "length": 2 * ext.x, "width": 2 * ext.y, "label": "delivery truck (simulated)"}
+        # pedestrian waiting on the crossing, in front of the truck
+        self.ped = self._pedestrian(cross_fwd, right_edge + JX_PED_KERB)
+        self.trigger = JX_TRIGGER_DIST
+        self.walk_time = (right_edge + JX_PED_KERB + left_edge + 2.0) / WALK_SPEED
+        # junction footprint along the ego road -> RSU on the far-left corner, aimed at the pedestrian
+        jb, fv = self.junction.bounding_box, self.spawn_tf.get_forward_vector()
+        jlen = 2 * (abs(fv.x) * jb.extent.x + abs(fv.y) * jb.extent.y)
+        self.world.tick()                                     # let the pedestrian settle before aiming at it
+        self._rsu(self.jx_dist + jlen + 2.0, -(left_edge + 3.0), look_at=self.ped.get_location())
+        self.junction_info = {"x": jb.location.x, "y": jb.location.y, "yaw": self.road_yaw + 90.0, "width": jlen}
+        c = self._offset(self.spawn_tf, fwd=cross_fwd).location
+        self.crossing_info = {"x": c.x, "y": c.y, "width": 3.0}
+
+    def scenario_state(self):
+        return {"name": SCENARIO_NAMES[self.args.scenario], "blocker": self.blocker_info, "rsu": self.rsu_info,
+                "junction": self.junction_info, "crossing": self.crossing_info}
 
     def _camera(self, tf, parent, q):
         bp = self.lib.find("sensor.camera.rgb")
@@ -207,11 +297,11 @@ class Scenario:
     # -------------------------------------------------------------- per-tick logic
     def step(self, sim_t):
         """Pedestrian trigger + walking. Returns True if a new pedestrian collision happened."""
-        if not self.walking and self.ped_dist() < TRIGGER_DIST:
+        if not self.walking and self.ped_dist() < self.trigger:
             self.walking, self.walk_t = True, 0.0
         if self.walking:
             self.walk_t += self.world.get_settings().fixed_delta_seconds
-            moving = self.walk_t < WALK_TIME
+            moving = self.walk_t < self.walk_time
             d = self.ped_dir
             self.ped.apply_control(carla.WalkerControl(carla.Vector3D(-d.x, -d.y, 0.0), WALK_SPEED if moving else 0.0))
         hit = any("walker" in c for c in self.collisions)
@@ -242,12 +332,12 @@ class Scenario:
             self.tm.set_desired_speed(self.ego, self.args.target_speed)
 
 
-def run_detection(detector, image, ground_z, ego_z=None, exclude_near=None):
-    """YOLO on one camera frame -> (frame, kept-detections-with-boxes, labels, world-space detections)."""
+def run_detection(detector, image, ground_z, exclude_near=None):
+    """YOLO on one camera frame -> (raw frame, normalised boxes for the dashboard, world-space detections)."""
     frame = to_bgr(image)
     cam_m = np.array(image.transform.get_matrix())
     dets = detector.detect(frame)
-    kept, labels, out = [], [], []
+    boxes, out = [], []
     for d in dets:
         x1, y1, x2, y2 = d["box"]
         pt = pixel_to_ground((x1 + x2) / 2.0, y2, cam_m, image.width, image.height, image.fov, ground_z)
@@ -257,13 +347,15 @@ def run_detection(detector, image, ground_z, ego_z=None, exclude_near=None):
                 math.hypot(pt[0] - exclude_near[0], pt[1] - exclude_near[1]) < 4.5:
             continue                                            # the RSU also sees the ego car - drop it
         out.append({"cls": d["cls"], "conf": d["conf"], "x": pt[0], "y": pt[1]})
-        kept.append(d)
-        labels.append(None)
-    return frame, kept, labels, out
+        boxes.append({"cls": d["cls"], "conf": round(d["conf"], 2), "x": round(pt[0], 2), "y": round(pt[1], 2),
+                      "box": [round(min(1.0, max(0.0, v)), 4) for v in
+                              (x1 / image.width, y1 / image.height, x2 / image.width, y2 / image.height)]})
+    return frame, boxes, out
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--scenario", choices=["intersection", "parked_truck"], default="intersection")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
     ap.add_argument("--town", default="Town03", help="'current' keeps whatever map is loaded")
@@ -311,14 +403,14 @@ def main():
     world.tick()
 
     scn = Scenario(world, tm, a)
-    frames, last_push, tick, fps, t_prev = {}, 0.0, 0, 0.0, time.time()
+    frames, boxes, ego_cam, last_push, tick, fps, t_prev = {}, {}, None, 0.0, 0, 0.0, time.time()
     onboard, rsu_dets = [], []
     try:
         while True:
             if flags["reset"]:
                 pipe.reset()
                 scn.rebuild()
-                flags["reset"], onboard, rsu_dets, frames = False, [], [], {}
+                flags["reset"], onboard, rsu_dets, frames, boxes, ego_cam = False, [], [], {}, {}, None
             frame_id = world.tick()
             sim_t = world.get_snapshot().timestamp.elapsed_seconds
             img_e, img_r = scn.ego_q.get(frame_id), scn.rsu_q.get(frame_id)
@@ -328,13 +420,13 @@ def main():
                 pipe.collision(sim_t)
 
             if tick % a.detect_every == 0:
-                fe, ke, le, onboard = run_detection(detector, img_e, scn.ground_z)
-                fr, kr, lr, rsu_dets = run_detection(detector, img_r, scn.ground_z, exclude_near=(ego["x"], ego["y"]))
-                # distance labels on the vehicle view
-                dl = [f'{math.hypot(o["x"] - ego["x"], o["y"] - ego["y"]):.0f} m' for o in onboard]
-                b64_v, _ = to_b64_jpeg(draw(fe, ke, dl))
-                b64_r, rsu_bytes = to_b64_jpeg(draw(fr, kr, lr))
-                frames = {"vehicle": b64_v, "rsu": b64_r}
+                fe, box_e, onboard = run_detection(detector, img_e, scn.ground_z)
+                fr, box_r, rsu_dets = run_detection(detector, img_r, scn.ground_z, exclude_near=(ego["x"], ego["y"]))
+                b64_v, _ = to_b64_jpeg(fe)              # raw frames: the dashboard draws boxes (System mode only)
+                b64_r, rsu_bytes = to_b64_jpeg(fr)
+                frames, boxes = {"vehicle": b64_v, "rsu": b64_r}, {"vehicle": box_e, "rsu": box_r}
+                ego_cam = {"matrix": np.array(img_e.transform.get_matrix()), "width": img_e.width,
+                           "height": img_e.height, "fov": img_e.fov, "ground_z": scn.ground_z}
                 pipe.rsu_publish(sim_t, rsu_dets, rsu_bytes)
 
             time.sleep(0.001)                                       # give the UDP/MQTT thread a moment
@@ -345,8 +437,8 @@ def main():
             fps = 0.9 * fps + 0.1 / max(now - t_prev, 1e-3)
             t_prev = now
             if now - last_push > 0.1:
-                dash.push(pipe.make_state("carla", sim_t, fps, ego, res,
-                                          {"truck": scn.truck_info, "rsu": scn.rsu_info}, frames))
+                dash.push(pipe.make_state("carla", sim_t, fps, ego, res, scn.scenario_state(),
+                                          frames, boxes, ego_cam))
                 last_push = now
             tick += 1
     except KeyboardInterrupt:

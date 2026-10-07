@@ -3,137 +3,239 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Perceptinet — Cooperative Perception Dashboard</title>
+<title>Perceptinet Dashboard</title>
 <style>
   :root{
-    --bg:#111827; --panel:#1F2937; --panel2:#273244; --line:#374151; --text:#F9FAFB; --muted:#9CA3AF;
-    --accent:#60A5FA; --ok:#34D399; --warn:#FBBF24; --alert:#F87171; --rsu:#FB923C;
+    --bg:#0B1120; --panel:#151E2E; --panel2:#1E293B; --line:#2B3648; --text:#F1F5F9; --muted:#94A3B8;
+    --accent:#60A5FA; --ok:#34D399; --warn:#FBBF24; --alert:#F87171; --rsu:#FB923C; --both:#34D399;
   }
-  @media (prefers-color-scheme: light){ :root{} }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-  header{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-  header h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px}
-  header h1 span{color:var(--accent)}
-  .pill{font-size:12px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:var(--panel)}
-  .pill b{color:var(--text);font-weight:600}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--alert);margin-right:6px}
-  .dot.on{background:var(--ok)}
+  body{display:flex;flex-direction:column;overflow:hidden}
+
+  /* ---------- header ---------- */
+  header{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap;flex:none}
+  header h1{font-size:16px;margin:0 6px 0 0;font-weight:800;letter-spacing:.5px;color:var(--accent)}
+  .seg{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:3px}
+  .seg button{background:none;border:0;color:var(--muted);font-weight:600;font-size:13px;padding:6px 14px;border-radius:7px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#0B1120}
+  .stat{font-size:12px;padding:5px 10px;border:1px solid var(--line);border-radius:8px;color:var(--muted);background:var(--panel);white-space:nowrap}
+  .stat b{color:var(--text);font-weight:700;margin-left:4px}
+  .stat b.good{color:var(--ok)} .stat b.bad{color:var(--alert)} .stat b.meh{color:var(--warn)}
+  button.stat{cursor:pointer;font:inherit;font-size:12px}
+  button.stat:hover{border-color:var(--accent)}
+  #coopBtn.on{border-color:var(--ok)} #coopBtn.off{border-color:var(--alert)}
   .spacer{flex:1}
-  main{display:grid;grid-template-columns:minmax(300px,1fr) minmax(360px,1.15fr) minmax(300px,.85fr);
-    gap:12px;padding:12px;height:calc(100% - 56px)}
-  .col{display:flex;flex-direction:column;gap:12px;min-height:0}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0}
-  .card h2{margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:600;display:flex;justify-content:space-between}
-  .card h2 em{font-style:normal;color:var(--accent);text-transform:none;letter-spacing:0}
-  .feed{flex:1;min-height:0;position:relative;background:#000;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center}
-  .feed img{width:100%;height:100%;object-fit:contain}
-  .feed .ph{position:absolute;color:var(--muted);font-size:13px}
-  #bevWrap{flex:1;min-height:0;position:relative}
-  #bev{position:absolute;inset:0;width:100%;height:100%;border-radius:8px;background:#0d1420}
-  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}
-  .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
-  #banner{border-radius:12px;padding:14px 16px;border:1px solid var(--line);background:var(--panel2)}
-  #banner .state{font-size:34px;font-weight:800;letter-spacing:1px;line-height:1}
-  #banner .reason{font-size:13px;color:var(--muted);margin-top:6px;min-height:18px}
-  #banner.CLEAR{border-color:var(--ok)}  #banner.CLEAR .state{color:var(--ok)}
-  #banner.SLOW{border-color:var(--warn)} #banner.SLOW .state{color:var(--warn)}
-  #banner.STOP{border-color:var(--alert);background:#3a1d24} #banner.STOP .state{color:var(--alert)}
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-  .m{background:var(--panel2);border-radius:8px;padding:8px 10px}
-  .m .k{font-size:11px;color:var(--muted)} .m .v{font-size:18px;font-weight:700;margin-top:2px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--alert);margin-right:4px}
+  .dot.on{background:var(--ok)}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  body.driver #sysBar, body.system #drvBar{display:none}
+  .view{flex:1;min-height:0;display:none;padding:12px;gap:12px}
+  body.driver #driver{display:grid} body.system #system{display:grid}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0;min-width:0;position:relative}
+  .card h2{margin:0 0 8px;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:700;display:flex;justify-content:space-between;gap:8px}
+  .card h2 em{font-style:normal;color:var(--accent);text-transform:none;letter-spacing:0;font-weight:600}
+  .feed{flex:1;min-height:0;width:100%;border-radius:8px;background:#000;display:block}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:6px}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:-1px}
+  .legend i.sq{border-radius:2px}
+  .legend i.ring{background:none;border:2px dashed var(--rsu)}
+
+  /* ---------- DRIVER MODE ---------- */
+  #driver{grid-template-columns:minmax(0,1fr) 380px}
+  #dView{padding:0;overflow:hidden;background:#000}
+  #dView .feed{border-radius:12px}
+  #dEdge{position:absolute;inset:0;pointer-events:none;border-radius:12px;transition:box-shadow .3s}
+  #dEdge.STOP{box-shadow:inset 0 0 0 4px var(--alert),inset 0 0 60px rgba(248,113,113,.55)}
+  #dEdge.left{box-shadow:inset 90px 0 70px -60px rgba(251,146,60,.75)}
+  #dEdge.right{box-shadow:inset -90px 0 70px -60px rgba(251,146,60,.75)}
+  #dSpeed{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);background:rgba(11,17,32,.72);border-radius:12px;padding:6px 18px;text-align:center}
+  #dSpeed b{font-size:30px;font-weight:800;display:block;line-height:1} #dSpeed span{font-size:11px;color:var(--muted)}
+  #dAssist{position:absolute;left:14px;top:14px;background:rgba(11,17,32,.72);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600}
+  .dSide{display:flex;flex-direction:column;gap:12px;min-height:0}
+  #dAct{border-radius:16px;padding:22px 20px;border:2px solid var(--ok);background:var(--panel);text-align:center}
+  #dAct .word{font-size:64px;font-weight:900;letter-spacing:3px;line-height:1}
+  #dAct .sub{font-size:16px;color:var(--muted);margin-top:10px}
+  #dAct.CLEAR .word{color:var(--ok)}
+  #dAct.SLOW{border-color:var(--warn);background:#2a2410} #dAct.SLOW .word{color:var(--warn)}
+  #dAct.STOP{border-color:var(--alert);background:#3a1418;animation:flash 0.8s infinite alternate} #dAct.STOP .word{color:var(--alert)}
+  @keyframes flash{to{background:#5a1a20}}
+  .alert{border-radius:14px;padding:16px 18px;background:var(--panel);border:1px solid var(--line);border-left:6px solid var(--rsu)}
+  .alert.STOP{border-left-color:var(--alert)} .alert.SLOW{border-left-color:var(--warn)}
+  .alert .top{display:flex;align-items:center;gap:12px}
+  .alert svg{flex:none;width:40px;height:40px}
+  .alert .title{font-size:21px;font-weight:800;line-height:1.15}
+  .alert .dist{font-size:44px;font-weight:900;margin:10px 0 2px;line-height:1}
+  .alert .dist small{font-size:18px;font-weight:600;color:var(--muted)}
+  .alert .detail{font-size:14px;color:var(--muted);margin-top:4px}
+  .alert .lead{margin-top:10px;font-size:14px;font-weight:600;color:var(--rsu);background:rgba(251,146,60,.1);border-radius:8px;padding:8px 10px}
+  .alert.mini{padding:10px 14px} .alert.mini .title{font-size:15px} .alert.mini svg{width:26px;height:26px}
+  .alert.mini .d2{margin-left:auto;font-size:18px;font-weight:800}
+  #dNone{color:var(--muted);font-size:15px;text-align:center;padding:24px 10px;border:1px dashed var(--line);border-radius:14px}
+
+  /* ---------- SYSTEM MODE ---------- */
+  #system{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,1fr) 214px}
+  #sBev{grid-column:1;grid-row:1/3} #sEgo{grid-column:2;grid-row:1} #sRsuCard{grid-column:2;grid-row:2}
+  #sBottom{grid-column:1/3;display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr) minmax(0,1.1fr);gap:12px;min-height:0}
+  .chip{position:absolute;z-index:2;font-size:12px;border-radius:8px;padding:6px 10px;background:rgba(11,17,32,.85);border:1px solid var(--line);pointer-events:none}
+  #sDecision{right:22px;top:40px;font-weight:700;max-width:60%}
+  #sDecision.CLEAR{border-color:var(--ok)} #sDecision.SLOW{border-color:var(--warn)} #sDecision.STOP{border-color:var(--alert)}
+  #sDecision .st{font-size:15px;margin-right:6px} #sDecision.CLEAR .st{color:var(--ok)} #sDecision.SLOW .st{color:var(--warn)} #sDecision.STOP .st{color:var(--alert)}
+  #rsuCallout{left:22px;top:40px;line-height:1.5}
+  #rsuCallout .no{color:var(--alert);font-weight:800} #rsuCallout .yes{color:var(--ok);font-weight:800}
+  .mgrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;flex:1;min-height:0}
+  .m{background:var(--panel2);border-radius:8px;padding:7px 10px;min-width:0}
+  .m .k{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .m .v{font-size:19px;font-weight:800;margin-top:3px;white-space:nowrap}
   .m .v small{font-size:11px;font-weight:500;color:var(--muted)}
-  .ctl{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;font-size:13px}
-  .switch{position:relative;width:44px;height:24px;flex:none}
-  .switch input{opacity:0;width:0;height:0}
-  .switch span{position:absolute;inset:0;background:#4B5563;border-radius:24px;cursor:pointer;transition:.2s}
-  .switch span:before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
-  .switch input:checked + span{background:var(--accent)} .switch input:checked + span:before{transform:translateX(20px)}
+  .m.hl{background:#2a1f12;outline:1px solid rgba(251,146,60,.5)} .m.hl .v{color:var(--rsu)}
+  #msg{flex:1;min-height:0;margin:0;overflow:auto;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;background:#0B1120;border-radius:8px;padding:8px;color:#CBD5E1}
+  #msgCmp{font-size:11.5px;color:var(--muted);margin-top:6px}
+  #msgCmp b{color:var(--ok)}
+  .ctl{display:flex;align-items:center;gap:10px;font-size:12.5px;margin-bottom:6px}
   input[type=range]{flex:1;accent-color:var(--accent)}
-  button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px}
-  button:hover{border-color:var(--accent)}
-  #log{flex:1;min-height:60px;overflow:auto;font-size:12px;display:flex;flex-direction:column;gap:5px}
-  #log div{padding:5px 8px;border-radius:6px;background:var(--panel2);border-left:3px solid var(--muted)}
+  button.btn{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px 10px;cursor:pointer;font-size:12px}
+  button.btn:hover{border-color:var(--accent)}
+  #log{flex:1;min-height:0;overflow:auto;font-size:11.5px;display:flex;flex-direction:column;gap:4px}
+  #log div{padding:4px 7px;border-radius:6px;background:var(--panel2);border-left:3px solid var(--muted)}
   #log .ok{border-color:var(--ok)} #log .warn{border-color:var(--warn)} #log .alert{border-color:var(--alert)} #log .info{border-color:var(--accent)}
   #log time{color:var(--muted);margin-right:6px}
-  @media (max-width:1100px){ main{grid-template-columns:1fr;height:auto} .feed{aspect-ratio:16/9} #bevWrap{aspect-ratio:1/1.1} }
+  .keys{font-size:11px;color:var(--muted)}
+  kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:10.5px}
+
+  @media (max-width:1100px){
+    body{overflow:auto}
+    .view{flex:none}
+    #driver,#system{grid-template-columns:1fr;grid-template-rows:none}
+    #sBottom .card{min-height:200px}
+    #sEgo,#sRsuCard,#sBev,#sBottom{grid-column:auto;grid-row:auto}
+    #sBev{order:-1}
+    #sBottom{grid-template-columns:1fr}
+    #dView,#sEgo,#sRsuCard,#sBev{aspect-ratio:16/10}
+    .mgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    #msg,#log{max-height:240px}
+  }
 </style>
 </head>
-<body>
+<body class="system">
 <header>
-  <h1><span>PERCEPTINET</span> — Cooperative Perception Dashboard</h1>
-  <span class="pill"><i class="dot" id="conn"></i><b id="connTxt">connecting…</b></span>
-  <span class="pill">Mode <b id="pMode">–</b></span>
-  <span class="pill">V2I link <b id="pTrans">–</b></span>
-  <span class="pill">Sim time <b id="pT">0.0</b> s</span>
-  <span class="pill">Loop <b id="pFps">0</b> FPS</span>
+  <h1>PERCEPTINET</h1>
+  <nav class="seg">
+    <button data-mode="driver">Driver Mode</button>
+    <button data-mode="system">System Mode</button>
+  </nav>
+  <div class="bar" id="sysBar">
+    <button class="stat" id="coopBtn" title="Toggle cooperative perception (C)">Cooperative Perception <b id="sCoop">–</b></button>
+    <span class="stat">Active RSUs <b id="sRsus">–</b></span>
+    <span class="stat">V2I Status <b id="sV2i">–</b></span>
+    <span class="stat">Scenario <b id="sScn">–</b></span>
+    <span class="stat">Simulated Network Delay <b id="sDelay">–</b></span>
+  </div>
+  <div class="bar" id="drvBar"></div>
   <span class="spacer"></span>
-  <span class="pill">FIT3163 · PDS-26</span>
+  <span class="stat"><i class="dot" id="conn"></i><b id="connTxt">connecting…</b></span>
 </header>
 
-<main>
-  <div class="col">
-    <div class="card" style="flex:1">
-      <h2>Vehicle camera <em>YOLO · onboard</em></h2>
-      <div class="feed"><span class="ph" id="phVeh">waiting for stream…</span><img id="imgVeh" alt=""></div>
-    </div>
-    <div class="card" style="flex:1">
-      <h2>RSU camera <em>YOLO · roadside</em></h2>
-      <div class="feed"><span class="ph" id="phRsu">waiting for stream…</span><img id="imgRsu" alt=""></div>
+<!-- ======================= DRIVER MODE ======================= -->
+<section class="view" id="driver">
+  <div class="card" id="dView">
+    <canvas class="feed" id="cvDrv"></canvas>
+    <div id="dEdge"></div>
+    <div id="dAssist">–</div>
+    <div id="dSpeed"><b id="dSpd">0</b><span>km/h</span></div>
+  </div>
+  <aside class="dSide">
+    <div id="dAct" class="CLEAR"><div class="word" id="dWord">CLEAR</div><div class="sub" id="dSub">Road ahead is clear</div></div>
+    <div id="dAlerts"></div>
+  </aside>
+</section>
+
+<!-- ======================= SYSTEM MODE ======================= -->
+<section class="view" id="system">
+  <div class="card" id="sEgo">
+    <h2>Ego Vehicle View <em>onboard camera · YOLO</em></h2>
+    <div class="chip" id="sDecision"></div>
+    <canvas class="feed" id="cvEgo"></canvas>
+    <div class="legend">
+      <span><i class="sq" style="background:#93C5FD"></i>vehicle detection</span>
+      <span><i class="sq" style="background:#FACC15"></i>pedestrian / VRU detection</span>
+      <span><i class="ring"></i>RSU object projected into ego view (not visible to ego)</span>
     </div>
   </div>
-
-  <div class="col">
-    <div class="card" style="flex:1">
-      <h2>Fused bird's-eye view <em id="bevInfo">ego-centred</em></h2>
-      <div id="bevWrap"><canvas id="bev"></canvas></div>
-      <div class="legend">
-        <span><i style="background:var(--accent)"></i>onboard only</span>
-        <span><i style="background:var(--rsu)"></i>RSU only (occluded for vehicle)</span>
-        <span><i style="background:var(--ok)"></i>confirmed by both</span>
-      </div>
+  <div class="card" id="sRsuCard">
+    <h2>RSU Camera View <em id="rsuTitle">roadside camera · YOLO on RSU</em></h2>
+    <div class="chip" id="rsuCallout"></div>
+    <canvas class="feed" id="cvRsu"></canvas>
+  </div>
+  <div class="card" id="sBev">
+    <h2>Fused bird's-eye view <em id="bevInfo">late fusion</em></h2>
+    <canvas class="feed" id="bev" style="background:#0d1420"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--accent)"></i>detected by ego</span>
+      <span><i style="background:var(--rsu)"></i>detected by RSU</span>
+      <span><i style="background:var(--both)"></i>detected by both</span>
+      <span><i class="ring"></i>blind / occluded for ego</span>
+      <span>● VRU &nbsp;▮ vehicle</span>
     </div>
   </div>
-
-  <div class="col">
-    <div id="banner" class="CLEAR"><div class="state" id="dState">CLEAR</div><div class="reason" id="dReason">–</div></div>
-
+  <div id="sBottom">
     <div class="card">
-      <h2>System metrics</h2>
-      <div class="grid2">
-        <div class="m"><div class="k">Ego speed</div><div class="v"><span id="mSpeed">0</span> <small>km/h</small></div></div>
-        <div class="m"><div class="k">V2I latency</div><div class="v"><span id="mLat">0</span> <small>ms</small></div></div>
-        <div class="m"><div class="k">Early-warning lead</div><div class="v"><span id="mLead">–</span> <small>s</small></div></div>
-        <div class="m"><div class="k">Collisions</div><div class="v"><span id="mCol">0</span></div></div>
-        <div class="m"><div class="k">V2I payload</div><div class="v"><span id="mPay">0</span> <small>B / msg</small></div></div>
-        <div class="m"><div class="k">vs. sending the frame</div><div class="v"><span id="mFrame">–</span></div></div>
-        <div class="m"><div class="k">Detections onboard / RSU</div><div class="v"><span id="mDet">0 / 0</span></div></div>
-        <div class="m"><div class="k">Messages</div><div class="v"><span id="mRate">0</span> <small>/ s</small></div></div>
+      <h2>Evaluation metrics <em id="leadNote"></em></h2>
+      <div class="mgrid">
+        <div class="m"><div class="k">Loop FPS</div><div class="v" id="mFps">–</div></div>
+        <div class="m"><div class="k">V2I latency</div><div class="v"><span id="mLat">–</span> <small>ms</small></div></div>
+        <div class="m"><div class="k">Fusion processing</div><div class="v"><span id="mFus">–</span> <small>ms</small></div></div>
+        <div class="m"><div class="k">Confidence ego / RSU</div><div class="v" id="mConf">–</div></div>
+        <div class="m"><div class="k">Objects ego / RSU / fused</div><div class="v" id="mObj">–</div></div>
+        <div class="m"><div class="k">Ego detection time</div><div class="v"><span id="mTEgo">–</span> <small>s</small></div></div>
+        <div class="m"><div class="k">RSU detection time</div><div class="v"><span id="mTRsu">–</span> <small>s</small></div></div>
+        <div class="m hl"><div class="k">Warning lead time</div><div class="v"><span id="mLead">–</span> <small>s</small></div></div>
+        <div class="m"><div class="k">Ego speed</div><div class="v"><span id="mSpd">–</span> <small>km/h</small></div></div>
+        <div class="m"><div class="k">Collisions</div><div class="v" id="mCol">0</div></div>
       </div>
     </div>
-
     <div class="card">
-      <h2>Experiment controls</h2>
-      <div class="ctl"><span>Cooperative perception (RSU → vehicle)</span>
-        <label class="switch"><input type="checkbox" id="cCoop" checked><span></span></label></div>
-      <div class="ctl"><span>Injected V2I delay</span>
-        <input type="range" id="cLat" min="0" max="1000" step="50" value="0"><b id="cLatV" style="width:64px;text-align:right">0 ms</b></div>
-      <div class="ctl"><button id="cReset">↻ Restart scenario</button></div>
+      <h2>Last V2I message <em>object-level, no video</em></h2>
+      <pre id="msg">waiting…</pre>
+      <div id="msgCmp">–</div>
     </div>
-
-    <div class="card" style="flex:1">
-      <h2>Event log</h2>
+    <div class="card">
+      <h2>Controls &amp; event log <em id="simInfo"></em></h2>
+      <div class="ctl"><span>Network delay</span>
+        <input type="range" id="cLat" min="0" max="1000" step="5" value="0"><b id="cLatV" style="width:58px;text-align:right">0 ms</b></div>
+      <div class="ctl"><button class="btn" id="cReset">↻ Restart scenario</button>
+        <span class="keys"><kbd>D</kbd>/<kbd>S</kbd> mode · <kbd>C</kbd> coop · <kbd>R</kbd> restart</span></div>
       <div id="log"></div>
     </div>
   </div>
-</main>
+</section>
 
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const COL = {onboard:'#60A5FA', rsu:'#FB923C', both:'#34D399'};
+  const SRC = {onboard:'#60A5FA', rsu:'#FB923C', both:'#34D399'};
+  const VRU = new Set(['person','pedestrian','walker','bicycle','cyclist','motorcycle']);
+  const NAME = {person:'Pedestrian', pedestrian:'Pedestrian', walker:'Pedestrian', bicycle:'Cyclist', cyclist:'Cyclist',
+                motorcycle:'Motorcyclist', car:'Car', van:'Van', truck:'Truck', bus:'Bus', vehicle:'Vehicle'};
+  const nm = c => NAME[c] || (c ? c[0].toUpperCase() + c.slice(1) : '?');
+  const fmt = (v, d = 1) => v == null ? '–' : v.toFixed(d);
+  const ICON = {
+    vru: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="4" r="2.2"/><path d="M10 7.5h3.2l2.6 4.3-1.6 1-1.7-2.6-.6 3.6 2.6 3.2V22h-2v-4.2l-2.2-2.5-1 3.6L7 22l-1.9-.6 2.7-7.4.8-4.4-1.7 1.2V14H5V9.8z"/></svg>',
+    vehicle: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 11l1.6-4.6A2 2 0 0 1 8.5 5h7a2 2 0 0 1 1.9 1.4L19 11a2 2 0 0 1 2 2v5h-2v2h-3v-2H8v2H5v-2H3v-5a2 2 0 0 1 2-2zm2.1 0h9.8l-1.2-3.5H8.3zM6.5 16a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm11 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z"/></svg>'};
   let ws, state = null, pulse = 0;
+  const imgs = {vehicle: null, rsu: null};
+
+  // ---------- mode switching (#driver / #system, so two windows can show both) ----
+  function setMode(m){
+    document.body.className = m;
+    document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+    if (location.hash !== '#' + m) history.replaceState(null, '', '#' + m);
+  }
+  document.querySelectorAll('.seg button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
+  setMode(location.hash === '#driver' ? 'driver' : 'system');
+  window.addEventListener('hashchange', () => setMode(location.hash === '#driver' ? 'driver' : 'system'));
 
   // ---------- websocket -------------------------------------------------------
   function connect(){
@@ -143,40 +245,32 @@
     ws.onmessage = ev => { state = JSON.parse(ev.data); update(state); };
   }
   const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+  const toggleCoop = () => state && send({cmd:'set_coop', value:!state.coop});
+  const restart = () => { $('log').innerHTML = ''; send({cmd:'reset'}); };
 
-  // ---------- controls --------------------------------------------------------
-  $('cCoop').onchange = e => send({cmd:'set_coop', value:e.target.checked});
-  $('cLat').oninput   = e => { $('cLatV').textContent = e.target.value + ' ms'; send({cmd:'set_latency', value:+e.target.value}); };
-  $('cReset').onclick = () => { $('log').innerHTML = ''; send({cmd:'reset'}); };
+  $('coopBtn').onclick = toggleCoop;
+  $('cLat').oninput = e => { $('cLatV').textContent = e.target.value + ' ms'; send({cmd:'set_latency', value:+e.target.value}); };
+  $('cReset').onclick = restart;
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
+    const k = e.key.toLowerCase();
+    if (k === 'd') setMode('driver'); else if (k === 's') setMode('system');
+    else if (k === 'c') toggleCoop(); else if (k === 'r') restart();
+  });
+
+  function setImg(key, b64){
+    if (!b64) return;
+    const im = new Image();
+    im.onload = () => { imgs[key] = im; };
+    im.src = 'data:image/jpeg;base64,' + b64;
+  }
 
   // ---------- UI update -------------------------------------------------------
   function update(s){
-    $('pMode').textContent = s.mode.toUpperCase();
-    $('pTrans').textContent = s.transport;
-    $('pT').textContent = s.t.toFixed(1);
-    $('pFps').textContent = s.fps.toFixed(0);
-    if (s.frames.vehicle){ $('imgVeh').src = 'data:image/jpeg;base64,' + s.frames.vehicle; $('phVeh').style.display = 'none'; }
-    if (s.frames.rsu){     $('imgRsu').src = 'data:image/jpeg;base64,' + s.frames.rsu;     $('phRsu').style.display = 'none'; }
-
-    const d = s.decision;
-    $('banner').className = d.state;
-    $('dState').textContent = d.state;
-    $('dReason').textContent = d.reason;
-
-    const m = s.metrics;
-    $('mSpeed').textContent = s.ego.speed_kmh.toFixed(0);
-    $('mLat').textContent = m.latency_ms.toFixed(0);
-    $('mLead').textContent = m.lead_time_s == null ? '–' : (m.lead_time_s >= 0 ? '+' : '') + m.lead_time_s.toFixed(1);
-    $('mCol').textContent = s.collisions;
-    $('mCol').style.color = s.collisions ? 'var(--alert)' : '';
-    $('mPay').textContent = m.payload_bytes;
-    $('mFrame').textContent = (m.frame_bytes && m.payload_bytes) ? `${(100 * (1 - m.payload_bytes / m.frame_bytes)).toFixed(1)}% smaller` : '–';
-    $('mDet').textContent = `${m.n_onboard} / ${m.n_rsu}`;
-    $('mRate').textContent = m.msgs_per_s.toFixed(0);
-    $('cCoop').checked = s.coop;
-    if (document.activeElement !== $('cLat')){ $('cLat').value = s.latency_set_ms; $('cLatV').textContent = s.latency_set_ms + ' ms'; }
-    $('bevInfo').textContent = s.coop ? 'cooperative mode' : 'onboard-only mode';
-
+    setImg('vehicle', s.frames.vehicle);
+    setImg('rsu', s.frames.rsu);
+    updateSystem(s);
+    updateDriver(s);
     const log = $('log');
     (s.events || []).forEach(e => {
       const row = document.createElement('div');
@@ -188,74 +282,229 @@
     });
   }
 
-  // ---------- bird's-eye canvas ----------------------------------------------
-  const cv = $('bev'), ctx = cv.getContext('2d');
-  const RANGE = {fwd: 68, back: 12, side: 18};
+  function updateSystem(s){
+    const st = s.status, m = s.metrics, d = s.decision;
+    $('sCoop').textContent = st.coop ? 'ON' : 'OFF';
+    $('sCoop').className = st.coop ? 'good' : 'bad';
+    $('coopBtn').className = 'stat ' + (st.coop ? 'on' : 'off');
+    $('sRsus').textContent = st.active_rsus;
+    $('sV2i').textContent = st.v2i;
+    $('sV2i').className = st.v2i === 'Connected' ? 'good' : 'bad';
+    $('sScn').textContent = st.scenario;
+    $('sDelay').textContent = st.net_delay_ms.toFixed(0) + ' ms';
+    $('rsuTitle').textContent = (st.rsu_ids[0] || 'RSU') + ' · YOLO runs on the RSU';
+    $('simInfo').textContent = `${s.mode.toUpperCase()} · ${s.transport} · t = ${s.t.toFixed(1)} s`;
+    $('bevInfo').textContent = st.coop ? 'late fusion: ego + RSU' : 'ego only (cooperative OFF)';
 
-  function draw(){
-    pulse = (pulse + 0.05) % (Math.PI * 2);
-    const dpr = window.devicePixelRatio || 1;
-    const w = cv.clientWidth, h = cv.clientHeight;
+    $('sDecision').className = 'chip ' + d.state;
+    $('sDecision').innerHTML = `<span class="st">${d.state}</span>`;
+    $('sDecision').appendChild(document.createTextNode(d.reason));
+
+    const co = $('rsuCallout');
+    if (s.hidden.length){
+      const h = s.hidden[0];
+      co.innerHTML = `Ego camera: ${nm(h.cls)} <span class="no">NOT visible</span><br>` +
+                     `RSU: ${nm(h.cls)} <span class="yes">detected</span> · conf = ${h.conf.toFixed(2)} · ${h.f.toFixed(0)} m ahead of ego`;
+    } else co.textContent = st.coop ? 'Every RSU object is also visible to the ego camera' : 'Cooperative perception OFF: RSU objects are not used by the vehicle';
+
+    $('mFps').textContent = s.fps.toFixed(0);
+    $('mLat').textContent = m.latency_ms.toFixed(0);
+    $('mFus').textContent = fmt(m.fusion_ms, 2);
+    $('mConf').textContent = `${fmt(m.conf_onboard, 2)} / ${fmt(m.conf_rsu, 2)}`;
+    $('mObj').textContent = `${m.n_onboard} / ${m.n_rsu} / ${m.n_fused}`;
+    $('mTEgo').textContent = fmt(m.t_onb_detect);
+    $('mTRsu').textContent = fmt(m.t_rsu_detect);
+    $('mLead').textContent = m.lead_time_s == null ? '–' : (m.lead_time_s >= 0 ? '+' : '') + m.lead_time_s.toFixed(1);
+    $('leadNote').textContent = m.lead_time_s != null && m.lead_time_s > 0
+      ? `RSU gave ${m.lead_time_s.toFixed(1)} s earlier awareness${st.coop ? '' : ' (unused: coop OFF)'}` : '';
+    $('mSpd').textContent = s.ego.speed_kmh.toFixed(0);
+    $('mCol').textContent = s.collisions;
+    $('mCol').style.color = s.collisions ? 'var(--alert)' : '';
+
+    if (s.v2i_msg){
+      const msg = Object.assign({}, s.v2i_msg), n = msg.objects.length;
+      if (n > 4) msg.objects = msg.objects.slice(0, 4).concat([`… +${n - 4} more`]);
+      $('msg').textContent = JSON.stringify(msg, null, 1).replace(/\[\n\s+([-\d.]+),\n\s+([-\d.]+)\n\s+\]/g, '[$1, $2]');
+    }
+    $('msgCmp').innerHTML = m.payload_bytes && m.frame_bytes
+      ? `${m.payload_bytes} B per message vs ${(m.frame_bytes / 1024).toFixed(1)} kB per JPEG frame → <b>${(100 * (1 - m.payload_bytes / m.frame_bytes)).toFixed(1)}% smaller</b> · ${m.msgs_per_s.toFixed(0)} msg/s`
+      : '–';
+    if (document.activeElement !== $('cLat')){ $('cLat').value = s.latency_set_ms; $('cLatV').textContent = s.latency_set_ms + ' ms'; }
+  }
+
+  function updateDriver(s){
+    const dv = s.driver, act = dv.action, alerts = dv.alerts, top = alerts[0];
+    $('dAct').className = act;
+    $('dWord').textContent = act;
+    $('dSub').textContent = act === 'STOP' ? 'Stop now: hazard in your path'
+      : act === 'SLOW' ? 'Slow down: hazard ahead'
+      : alerts.length ? 'Proceed with caution' : 'Road ahead is clear';
+    $('dSpd').textContent = s.ego.speed_kmh.toFixed(0);
+    const as = {on:['#34D399','Roadside assist connected'], off:['#94A3B8','Roadside assist off · camera only'], lost:['#FBBF24','Roadside assist unavailable']}[dv.assist];
+    $('dAssist').innerHTML = `<i class="dot" style="background:${as[0]}"></i>${as[1]}`;
+    $('dEdge').className = act === 'STOP' ? 'STOP' : (top && top.hidden ? top.side : '');
+
+    const box = $('dAlerts');
+    if (!alerts.length){
+      box.innerHTML = `<div id="dNone">${act === 'STOP' ? 'Holding stop until the path is clear' : 'No hidden hazards detected'}</div>`;
+      return;
+    }
+    let lead = '';
+    if (top.hidden) lead = top.since_s != null && top.since_s >= 0.5
+      ? `Roadside unit has seen it for ${top.since_s.toFixed(1)} s. Your camera cannot see it yet.`
+      : 'Detected by the roadside unit. Your camera cannot see it yet.';
+    else if (top.lead_s) lead = `Roadside unit warned you ${top.lead_s.toFixed(1)} s before your camera saw it.`;
+    let html = `<div class="alert ${top.level}"><div class="top"><span style="color:${top.hidden ? 'var(--rsu)' : 'var(--text)'}">${ICON[top.kind] || ICON.vehicle}</span>
+      <div class="title"></div></div><div class="dist">${top.dist} <small>m ahead</small></div><div class="detail"></div>${lead ? '<div class="lead"></div>' : ''}</div>`;
+    alerts.slice(1).forEach(a => {
+      html += `<div class="alert mini ${a.level}"><div class="top"><span>${ICON[a.kind] || ICON.vehicle}</span><div class="title"></div><span class="d2">${a.dist} m</span></div></div>`;
+    });
+    box.innerHTML = html;
+    const titles = box.querySelectorAll('.title');
+    alerts.forEach((a, i) => titles[i].textContent = a.title);
+    box.querySelector('.detail').textContent = top.detail;
+    if (lead) box.querySelector('.lead').textContent = lead;
+  }
+
+  // ---------- canvas helpers --------------------------------------------------
+  function prep(cv){
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)){ cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    const ctx = cv.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+    return {ctx, w, h};
+  }
+  function drawFrame(cv, img){
+    const c = prep(cv);
+    if (!img){
+      c.ctx.fillStyle = '#94A3B8'; c.ctx.font = '13px sans-serif'; c.ctx.textAlign = 'center';
+      c.ctx.fillText('waiting for stream…', c.w / 2, c.h / 2); c.ctx.textAlign = 'start';
+      return null;
+    }
+    const k = Math.min(c.w / img.naturalWidth, c.h / img.naturalHeight), rw = img.naturalWidth * k, rh = img.naturalHeight * k;
+    c.r = {x: (c.w - rw) / 2, y: (c.h - rh) / 2, w: rw, h: rh};
+    c.ctx.drawImage(img, c.r.x, c.r.y, rw, rh);
+    return c;
+  }
+  const px = (r, b) => [r.x + b[0] * r.w, r.y + b[1] * r.h, (b[2] - b[0]) * r.w, (b[3] - b[1]) * r.h];
+  function tag(ctx, x, y, text, bg, size = 12){
+    ctx.font = `700 ${size}px -apple-system,Segoe UI,sans-serif`;
+    const tw = ctx.measureText(text).width, th = size + 6;
+    y = Math.max(y, th);
+    ctx.fillStyle = bg; ctx.fillRect(x, y - th, tw + 10, th);
+    ctx.fillStyle = '#0B1120'; ctx.fillText(text, x + 5, y - 5);
+  }
+  function drawBoxes(c, boxes, rsuView){
+    const ctx = c.ctx;
+    (boxes || []).forEach(b => {
+      const [x, y, w, h] = px(c.r, b.box), vru = VRU.has(b.cls);
+      const col = rsuView && b.hidden ? '#FB923C' : vru ? '#FACC15' : '#93C5FD';
+      ctx.strokeStyle = col; ctx.lineWidth = rsuView && b.hidden ? 3 : 2; ctx.strokeRect(x, y, w, h);
+      tag(ctx, x, y, `${nm(b.cls)} ${b.conf.toFixed(2)}` + (rsuView && b.hidden ? ' · NOT VISIBLE TO EGO' : (!rsuView && b.f > 0 ? ` · ${b.f.toFixed(0)} m` : '')), col, 11);
+    });
+  }
+  function drawGhosts(c, ghosts, driver){
+    const ctx = c.ctx, a = 0.6 + 0.4 * Math.sin(pulse * 2);
+    (ghosts || []).forEach(g => {
+      const [x, y, w, h] = px(c.r, g.box);
+      ctx.save();
+      ctx.fillStyle = `rgba(251,146,60,${driver ? 0.22 : 0.15})`; ctx.fillRect(x, y, w, h);
+      ctx.setLineDash([7, 5]); ctx.lineWidth = driver ? 3 : 2; ctx.strokeStyle = `rgba(251,146,60,${a})`; ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+      tag(ctx, x, y - 3, driver ? `HIDDEN ${nm(g.cls).toUpperCase()} · ${g.dist} m` : `via RSU: ${nm(g.cls)} ${g.conf.toFixed(2)} · hidden`, '#FB923C', driver ? 14 : 11);
+    });
+  }
 
+  // ---------- bird's-eye view -------------------------------------------------
+  const RANGE = {fwd: 68, back: 12, side: 18};
+  function drawBev(){
+    const {ctx, w, h} = prep($('bev'));
     const sc = Math.min(w / (2 * RANGE.side), h / (RANGE.fwd + RANGE.back));
     const baseY = h - RANGE.back * sc;
     const PX = l => w / 2 + l * sc, PY = f => baseY - f * sc;
-
-    // grid
     ctx.strokeStyle = 'rgba(148,163,184,.10)'; ctx.lineWidth = 1; ctx.fillStyle = 'rgba(148,163,184,.45)'; ctx.font = '10px sans-serif';
     for (let f = 0; f <= RANGE.fwd; f += 10){ ctx.beginPath(); ctx.moveTo(0, PY(f)); ctx.lineTo(w, PY(f)); ctx.stroke(); ctx.fillText(f + ' m', 4, PY(f) - 3); }
-    for (let l = -15; l <= 15; l += 5){ ctx.beginPath(); ctx.moveTo(PX(l), 0); ctx.lineTo(PX(l), h); ctx.stroke(); }
+    const half = w / 2 / sc;                                   // visible metres either side (BEV fills a wide panel)
+    for (let l = -Math.floor(half / 5) * 5; l <= half; l += 5){ ctx.beginPath(); ctx.moveTo(PX(l), 0); ctx.lineTo(PX(l), h); ctx.stroke(); }
+    if (!state) return;
 
-    if (!state){ ctx.fillStyle = '#9CA3AF'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('waiting for simulation…', w / 2, h / 2); ctx.textAlign = 'start'; requestAnimationFrame(draw); return; }
-
-    const d = state.decision;
-    // ego lane + decision zones
-    ctx.fillStyle = 'rgba(148,163,184,.07)'; ctx.fillRect(PX(-1.75), PY(RANGE.fwd), 3.5 * sc, (RANGE.fwd + 0) * sc);
+    const d = state.decision, sc0 = state.scenario || {};
+    ctx.fillStyle = 'rgba(148,163,184,.07)'; ctx.fillRect(PX(-1.75), PY(RANGE.fwd), 3.5 * sc, RANGE.fwd * sc);
     ctx.fillStyle = 'rgba(251,191,36,.08)'; ctx.fillRect(PX(-d.slow_half), PY(d.slow_dist), 2 * d.slow_half * sc, d.slow_dist * sc);
     ctx.fillStyle = 'rgba(248,113,113,.14)'; ctx.fillRect(PX(-d.stop_half), PY(d.stop_dist), 2 * d.stop_half * sc, d.stop_dist * sc);
-    ctx.strokeStyle = 'rgba(251,191,36,.5)'; ctx.setLineDash([4, 4]); ctx.strokeRect(PX(-d.slow_half), PY(d.slow_dist), 2 * d.slow_half * sc, d.slow_dist * sc);
-    ctx.strokeStyle = 'rgba(248,113,113,.6)'; ctx.strokeRect(PX(-d.stop_half), PY(d.stop_dist), 2 * d.stop_half * sc, d.stop_dist * sc); ctx.setLineDash([]);
-
-    // onboard field of view (90 deg)
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = 'rgba(251,191,36,.5)'; ctx.strokeRect(PX(-d.slow_half), PY(d.slow_dist), 2 * d.slow_half * sc, d.slow_dist * sc);
+    ctx.strokeStyle = 'rgba(248,113,113,.6)'; ctx.strokeRect(PX(-d.stop_half), PY(d.stop_dist), 2 * d.stop_half * sc, d.stop_dist * sc);
+    // ego camera field of view (90 deg)
     ctx.strokeStyle = 'rgba(96,165,250,.35)'; ctx.setLineDash([6, 5]);
-    ctx.beginPath(); ctx.moveTo(PX(0), PY(0)); ctx.lineTo(PX(RANGE.fwd), PY(RANGE.fwd)); ctx.moveTo(PX(0), PY(0)); ctx.lineTo(PX(-RANGE.fwd), PY(RANGE.fwd)); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(PX(0), PY(0)); ctx.lineTo(PX(RANGE.fwd), PY(RANGE.fwd)); ctx.moveTo(PX(0), PY(0)); ctx.lineTo(PX(-RANGE.fwd), PY(RANGE.fwd)); ctx.stroke();
+    ctx.setLineDash([]);
 
-    // occluder (parked truck)
-    const sc0 = state.scenario || {};
-    if (sc0.truck){
-      const t = sc0.truck; ctx.save(); ctx.translate(PX(t.l), PY(t.f)); ctx.rotate(t.rel_yaw * Math.PI / 180);
+    if (sc0.junction){                                         // cross road of the intersection
+      const j = sc0.junction, y = PY(j.f);
+      ctx.fillStyle = 'rgba(148,163,184,.07)'; ctx.fillRect(0, y - j.width / 2 * sc, w, j.width * sc);
+      ctx.strokeStyle = 'rgba(148,163,184,.35)'; ctx.lineWidth = 1;
+      [-1, 1].forEach(k => { ctx.beginPath(); ctx.moveTo(0, y + k * j.width / 2 * sc); ctx.lineTo(PX(-5.25), y + k * j.width / 2 * sc);
+        ctx.moveTo(PX(5.25), y + k * j.width / 2 * sc); ctx.lineTo(w, y + k * j.width / 2 * sc); ctx.stroke(); });
+      ctx.fillStyle = 'rgba(148,163,184,.55)'; ctx.font = '10px sans-serif'; ctx.fillText('intersection', 4, y + 3);
+    }
+    if (sc0.crossing){                                         // zebra crossing over the ego road
+      const c = sc0.crossing;
+      ctx.fillStyle = 'rgba(241,245,249,.22)';
+      for (let l = -5; l < 5.25; l += 1) ctx.fillRect(PX(l), PY(c.f + c.width / 2), 0.5 * sc, c.width * sc);
+    }
+    ctx.strokeStyle = 'rgba(148,163,184,.25)';                 // ego road edges
+    [-5.25, 5.25].forEach(l => { ctx.beginPath(); ctx.moveTo(PX(l), 0); ctx.lineTo(PX(l), h); ctx.stroke(); });
+    if (sc0.blocker){                                          // simulated occluder
+      const t = sc0.blocker; ctx.save(); ctx.translate(PX(t.l), PY(t.f)); ctx.rotate(t.rel_yaw * Math.PI / 180);
       ctx.fillStyle = '#4B5563'; ctx.strokeStyle = '#9CA3AF'; ctx.lineWidth = 1.5;
       ctx.fillRect(-t.width / 2 * sc, -t.length / 2 * sc, t.width * sc, t.length * sc); ctx.strokeRect(-t.width / 2 * sc, -t.length / 2 * sc, t.width * sc, t.length * sc);
-      ctx.restore(); ctx.fillStyle = '#9CA3AF'; ctx.font = '11px sans-serif'; ctx.fillText('parked truck', PX(t.l) + t.width * sc / 2 + 6, PY(t.f) + 4);
+      ctx.restore(); ctx.fillStyle = '#9CA3AF'; ctx.font = '11px sans-serif'; ctx.fillText(t.label, PX(t.l) + t.width * sc / 2 + 6, PY(t.f) + 4);
     }
-    // RSU marker
+    let rsuXY = null;
     if (sc0.rsu){
-      const r = sc0.rsu, x = PX(r.l), y = PY(r.f);
+      const x = PX(sc0.rsu.l), y = PY(sc0.rsu.f); rsuXY = [x, y];
       ctx.strokeStyle = 'rgba(251,146,60,.6)'; ctx.lineWidth = 1.5;
       for (let i = 1; i <= 3; i++){ ctx.beginPath(); ctx.arc(x, y, 6 + i * 6 + Math.sin(pulse) * 1.5, -0.8, 0.8); ctx.stroke(); }
       ctx.fillStyle = '#FB923C'; ctx.fillRect(x - 5, y - 5, 10, 10);
-      ctx.fillStyle = '#FDBA74'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('RSU', x + 10, y + 4);
+      ctx.fillStyle = '#FDBA74'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('RSU', x - 30, y + 4);
     }
-    // detected objects
     (state.objects || []).forEach(o => {
-      const x = PX(o.l), y = PY(o.f), col = COL[o.src] || '#ccc', vru = ['person', 'pedestrian', 'bicycle', 'cyclist', 'motorcycle'].includes(o.cls);
-      if (o.src === 'rsu'){ ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 12 + Math.sin(pulse * 2) * 3, 0, 7); ctx.stroke(); }
+      const x = PX(o.l), y = PY(o.f), col = SRC[o.src] || '#ccc';
+      if (o.hidden){
+        if (rsuXY){ ctx.strokeStyle = 'rgba(251,146,60,.45)'; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(rsuXY[0], rsuXY[1]); ctx.lineTo(x, y); ctx.stroke(); }
+        ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+        ctx.beginPath(); ctx.arc(x, y, 13 + Math.sin(pulse * 2) * 3, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      }
       ctx.fillStyle = col;
-      if (vru){ ctx.beginPath(); ctx.arc(x, y, 6, 0, 7); ctx.fill(); }
-      else { ctx.fillRect(x - 5, y - 9, 10, 18); }
-      ctx.fillStyle = '#F9FAFB'; ctx.font = '11px sans-serif'; ctx.fillText(`${o.cls} ${o.f.toFixed(0)} m`, x + 12, y - 8);
+      if (VRU.has(o.cls)){ ctx.beginPath(); ctx.arc(x, y, 6, 0, 7); ctx.fill(); }
+      else ctx.fillRect(x - 5, y - 9, 10, 18);
+      ctx.fillStyle = '#F9FAFB'; ctx.font = '11px sans-serif';
+      ctx.fillText(`${nm(o.cls)} ${o.f.toFixed(0)} m` + (o.hidden ? ' · occluded' : ''), x + 14, y - 8);
     });
-    // ego
     ctx.fillStyle = '#60A5FA'; ctx.beginPath(); ctx.moveTo(PX(0), PY(2.4)); ctx.lineTo(PX(-1.1), PY(-2)); ctx.lineTo(PX(1.1), PY(-2)); ctx.closePath(); ctx.fill();
     ctx.fillStyle = '#93C5FD'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('EGO', PX(2), PY(-1));
+  }
 
-    requestAnimationFrame(draw);
+  // ---------- render loop -----------------------------------------------------
+  function frame(){
+    pulse = (pulse + 0.05) % (Math.PI * 2);
+    const b = (state && state.boxes) || {};
+    if (document.body.className === 'driver'){
+      const c = drawFrame($('cvDrv'), imgs.vehicle);
+      if (c && state) drawGhosts(c, state.driver.ghosts, true);
+    } else {
+      const ce = drawFrame($('cvEgo'), imgs.vehicle);
+      if (ce && state){ drawBoxes(ce, b.vehicle, false); drawGhosts(ce, state.driver.ghosts, false); }
+      const cr = drawFrame($('cvRsu'), imgs.rsu);
+      if (cr && state) drawBoxes(cr, b.rsu, true);
+      drawBev();
+    }
+    requestAnimationFrame(frame);
   }
   connect();
-  requestAnimationFrame(draw);
+  requestAnimationFrame(frame);
 })();
 </script>
 </body>
