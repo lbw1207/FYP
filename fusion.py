@@ -112,6 +112,7 @@ def fuse(onboard, rsu, merge_dist=2.0):
 @dataclass
 class DecisionConfig:
     decel: float = 5.0          # assumed braking deceleration [m/s^2]
+    reaction: float = 0.0       # time from a decision to the car acting on it [s]; extends the stop distance
     margin: float = 6.0         # safety margin [m]
     slow_factor: float = 2.0    # slow zone = stop_dist * factor + slow_extra
     slow_extra: float = 8.0
@@ -134,7 +135,7 @@ class Decider:
 
     def decide(self, t, ego, objects):
         c, v = self.cfg, max(ego["speed"], 0.0)
-        stop_dist = v * v / (2 * c.decel) + c.margin
+        stop_dist = v * c.reaction + v * v / (2 * c.decel) + c.margin
         slow_dist = stop_dist * c.slow_factor + c.slow_extra
         latched = self.state == "STOP"
         raw, hazard = "CLEAR", None

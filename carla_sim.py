@@ -59,9 +59,15 @@ JX_PED_PAUSE = 2.0          # the pedestrian freezes this long in the middle of 
                             # already walked out of its path - a lucky near-miss instead of the failure we demo
 JX_PED_SPEED = 2.5          # the pedestrian steps out briskly [m/s] - a slow walk gives the onboard camera time
 JX_TRIGGER_DIST = None      # step out when the ego is this far before the pedestrian (along the road) [m];
-                            # None = derived so the pedestrian reaches the ego lane exactly when a car still
-                            # driving at --target-speed arrives, i.e. too late for the onboard camera alone
-JX_TRIGGER_EXTRA = 2.3      # ego location is the car's centre; its front bumper is ~2.3 m further forward
+                            # None = derived from stopping physics, see JX_VISIBLE_FRACTION
+JX_VISIBLE_FRACTION = 0.5   # the pedestrian becomes visible to the onboard camera when a car still at
+                            # --target-speed is at this fraction of its reaction + braking distance, so it cannot
+                            # stop on its own camera alone. The step-out point is fixed on the road: a car the RSU
+                            # has already slowed reaches it later and slower, and can stop
+BUMPER = 2.3                # ego location is the car's centre; its front bumper is ~2.3 m further forward
+MAX_DECEL = 8.0             # m/s^2 at full brake (approx. for CARLA cars) - used for timing and the brake controller
+COMFORT_DECEL = 3.5         # m/s^2 the decision logic plans a STOP with (a firm but comfortable stop)
+STOP_GAP = 2.5              # a planned stop ends with the front bumper this far before the hazard [m]
 EGO_CAM = carla.Transform(carla.Location(x=1.5, z=1.6))
 SLOW_FACTOR = 0.4           # SLOW = drive at 40 % of --target-speed (same as the mock)
 DEFAULT_SPEED = {"intersection": 50.0, "parked_truck": 35.0}   # km/h; 50 = typical urban speed limit
@@ -320,11 +326,14 @@ class Scenario:
         self.walk_speed = JX_PED_SPEED
         self.pause_at, self.pause_left = 0.0, JX_PED_PAUSE  # stop on the ego lane centre line
         self.walk_time = (t_right + left_edge + 2.0) / self.walk_speed
-        # Step out so the pedestrian reaches the ego lane centre just as a full-speed car arrives.
-        # The trigger is a fixed distance, so a car the RSU has already slowed down reaches it later and slower
-        # and can stop; a car relying on its own camera only sees the pedestrian with a few metres to go.
-        self.trigger = JX_TRIGGER_DIST or (self.args.target_speed / 3.6 * max(t_right, 0.5) / self.walk_speed
-                                           + JX_TRIGGER_EXTRA)
+        # Step out so the pedestrian appears (to the onboard camera) well inside a full-speed car's stopping distance:
+        # hidden while walking from the truck's centre line past its inner side, then visible.
+        v = self.args.target_speed / 3.6
+        t_hidden = max(ext.y - 0.3, 0.3) / self.walk_speed
+        stopping = v * self.args.reaction_time + v * v / (2 * MAX_DECEL)
+        self.trigger = JX_TRIGGER_DIST or (JX_VISIBLE_FRACTION * stopping + v * t_hidden + BUMPER)
+        print(f"[carla_sim] at {self.args.target_speed:.0f} km/h the car needs ~{stopping:.1f} m to stop; the "
+              f"pedestrian becomes visible ~{JX_VISIBLE_FRACTION * stopping:.1f} m ahead of the bumper")
         print(f"[carla_sim] truck {2 * ext.x:.1f} x {2 * ext.y:.1f} m at {t_right:.1f} m right; "
               f"pedestrian {ped_fwd - t_fwd - ext.x:.1f} m in front of it; trigger {self.trigger:.1f} m")
         # junction footprint along the ego road (for the dashboard); RSU on the left, aimed at the pedestrian
@@ -395,13 +404,20 @@ class Scenario:
         return {"x": tr.location.x, "y": tr.location.y, "yaw": tr.rotation.yaw,
                 "speed": math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2)}
 
-    def apply_decision(self, state):
-        """STOP = emergency brake (autopilot off). SLOW = throttle the autopilot. CLEAR = normal."""
+    def apply_decision(self, state, hazard_f=None, speed=0.0):
+        """STOP = brake to a stop before the hazard (autopilot off). SLOW = throttle the autopilot. CLEAR = normal.
+        STOP brakes only as hard as needed to stop STOP_GAP before the hazard: gently when there is room (an early,
+        RSU-based warning), full brake only when it is late. Same controller with cooperative perception ON and OFF."""
         if state == "STOP":
             if self.autopilot:
                 self.ego.set_autopilot(False, self.tm.get_port())
                 self.autopilot = False
-            self.ego.apply_control(carla.VehicleControl(throttle=0.0, brake=1.0, steer=0.0))
+            brake = 1.0
+            if hazard_f is not None and speed > 0.5:
+                room = hazard_f - BUMPER - STOP_GAP
+                need = speed * speed / (2 * room) if room > 0.3 else float("inf")   # required deceleration
+                brake = min(1.0, max(0.15, need / MAX_DECEL))
+            self.ego.apply_control(carla.VehicleControl(throttle=0.0, brake=brake, steer=0.0))
             return
         if not self.autopilot:
             self.ego.set_autopilot(True, self.tm.get_port())
@@ -425,6 +441,45 @@ class Scenario:
             self.tm_slow_logged = True
             return True
         return False
+
+
+class RunSummary:
+    """One line per run with the numbers that matter for the ON/OFF comparison (printed + event log)."""
+
+    def __init__(self, scn, pipe):
+        self.scn, self.pipe, self.done = scn, pipe, False
+        self.v_step = self.seen_at = self.min_gap = None
+        self.peak_decel, self.hist, self.collided = 0.0, deque(maxlen=6), False
+
+    def update(self, t, speed, onboard):
+        scn = self.scn
+        self.hist.append((t, speed))
+        if self.done or not scn.walking:
+            return
+        if self.v_step is None:
+            self.v_step = speed
+        if len(self.hist) == self.hist.maxlen:                # deceleration over ~0.25 s (smooths noise)
+            (t0, v0), (t1, v1) = self.hist[0], self.hist[-1]
+            self.peak_decel = max(self.peak_decel, (v0 - v1) / max(t1 - t0, 1e-3))
+        ahead = scn.ped_ahead() - BUMPER
+        ped = scn.ped.get_location()
+        if self.seen_at is None and any(group_of(o["cls"]) == "vru" and math.hypot(o["x"] - ped.x, o["y"] - ped.y) < 3.0
+                                        for o in onboard):
+            self.seen_at = ahead
+        if abs(scn._road_coords(ped)[1]) < 1.5:               # pedestrian in the ego's path
+            self.min_gap = ahead if self.min_gap is None else min(self.min_gap, ahead)
+        self.collided = self.collided or self.pipe.collisions > 0
+        stopped = speed < 0.2 and scn.walk_t >= scn.walk_time
+        if self.collided or stopped or ahead < -5.0:
+            self.done = True
+            msg = (f"RUN SUMMARY (cooperative {'ON' if self.pipe.coop else 'OFF'}): "
+                   f"{self.v_step * 3.6:.0f} km/h at step-out, onboard camera first saw the pedestrian "
+                   + (f"{self.seen_at:.1f} m ahead" if self.seen_at is not None else "- never")
+                   + f", peak deceleration {self.peak_decel:.1f} m/s^2, closest gap "
+                   + (f"{self.min_gap:.1f} m" if self.min_gap is not None else "-")
+                   + (", COLLISION" if self.collided else ", no collision"))
+            print(msg)
+            self.pipe.note(t, "alert" if self.collided else "ok", msg)
 
 
 def run_detection(detector, image, ground_z, exclude_near=None):
@@ -482,6 +537,9 @@ def main():
     # keep only road users - without a class list YOLO reports all 80 COCO classes (e.g. "toilet")
     detector = Detector(a.weights, a.conf, a.imgsz, a.device, a.classes or DEFAULT_CLASSES)
     pipe = Pipeline(make_transport(a.transport, a.mqtt_host))
+    # plan STOPs as a comfortable stop that already allows for the reaction time (the brake controller in
+    # apply_decision then only brakes as hard as the remaining room requires)
+    pipe.decider.cfg.reaction, pipe.decider.cfg.decel = a.reaction_time, COMFORT_DECEL
     flags = {"reset": False}
 
     def on_command(c):
@@ -510,6 +568,7 @@ def main():
     frames, boxes, ego_cam, last_push, tick, fps, t_prev = {}, {}, None, 0.0, 0, 0.0, time.time()
     onboard, rsu_dets = [], []
     decisions = deque()                                    # (sim time, state) - acted on after --reaction-time
+    run = RunSummary(scn, pipe)
     try:
         while True:
             if flags["reset"]:
@@ -517,6 +576,7 @@ def main():
                 scn.rebuild()
                 flags["reset"], onboard, rsu_dets, frames, boxes, ego_cam = False, [], [], {}, {}, None
                 decisions.clear()
+                run = RunSummary(scn, pipe)
                 print(f"\n---- scenario restarted, cooperative perception {'ON' if pipe.coop else 'OFF'} ----")
             frame_id = world.tick()
             sim_t = world.get_snapshot().timestamp.elapsed_seconds
@@ -546,7 +606,9 @@ def main():
             while len(decisions) > 1 and decisions[1][0] <= sim_t - a.reaction_time:
                 decisions.popleft()
             acted = decisions[0][1] if decisions[0][0] <= sim_t - a.reaction_time else "CLEAR"
-            scn.apply_decision(acted)
+            hz = res["decision"]["hazard"]
+            scn.apply_decision(acted, hz["f"] if hz else None, ego["speed"])
+            run.update(sim_t, ego["speed"], onboard)
             if scn.autopilot_slowdown(acted, ego["speed"]):
                 pipe.note(sim_t, "warn", "Ego slowed by the CARLA autopilot, not by Perceptinet (decision is CLEAR)")
 
