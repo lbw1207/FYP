@@ -48,7 +48,8 @@ RSU_SIDE_OFFSET, RSU_HEIGHT, RSU_PITCH = 6.5, 8.0, -35.0     # RSU pole on the L
 JX_MIN_DIST, JX_MAX_DIST = 70.0, 130.0  # how far ahead of the ego spawn the junction may be (room to reach
 JX_FALLBACK_MIN = 45.0                  # --target-speed before the step-out); closer junctions only as fallback
 JX_CROSSING_BACK = 1.5      # truck front / crossing this far before the junction entry [m]
-JX_TRUCK_KERB = 1.4         # truck centre this far right of the road's right edge (half on the kerb)
+JX_TRUCK_INNER = 2.0        # the truck's near side is this far right of the ego lane centre [m] - it stands in the
+                            # next lane / at the kerb right beside the ego lane, wherever the road edge is
 JX_PED_GAPS = (0.6, 0.9, 1.2)   # pedestrian this far in front of the truck's nose (first that spawns) [m]
 JX_RSU_AHEAD = 6.0          # RSU pole this far beyond the pedestrian along the road [m]
 JX_RSU_SIDE = 2.5           # ... and this far left of the road's left edge [m]
@@ -58,12 +59,11 @@ JX_PED_PAUSE = 2.0          # the pedestrian freezes this long in the middle of 
                             # Without it a late-braking car arrives a moment later and the pedestrian has
                             # already walked out of its path - a lucky near-miss instead of the failure we demo
 JX_PED_SPEED = 2.5          # the pedestrian steps out briskly [m/s] - a slow walk gives the onboard camera time
-JX_TRIGGER_DIST = None      # step out when the ego is this far before the pedestrian (along the road) [m];
-                            # None = derived from stopping physics, see JX_VISIBLE_FRACTION
-JX_VISIBLE_FRACTION = 0.5   # the pedestrian becomes visible to the onboard camera when a car still at
-                            # --target-speed is at this fraction of its reaction + braking distance, so it cannot
-                            # stop on its own camera alone. The step-out point is fixed on the road: a car the RSU
-                            # has already slowed reaches it later and slower, and can stop
+JX_VISIBLE_FRACTION = 0.5   # the pedestrian becomes visible to the onboard camera when a car at cruise speed is at
+                            # this fraction of its reaction + braking distance, so it cannot stop on its own camera
+                            # alone. The step-out point is fixed on the road (computed from the cruise speed, which
+                            # is the same with cooperative perception ON and OFF): a car the RSU has already slowed
+                            # reaches it later and slower, and can stop
 BUMPER = 2.3                # ego location is the car's centre; its front bumper is ~2.3 m further forward
 MAX_DECEL = 8.0             # m/s^2 at full brake (approx. for CARLA cars) - used for timing and the brake controller
 COMFORT_DECEL = 3.5         # m/s^2 the decision logic plans a STOP with (a firm but comfortable stop)
@@ -222,9 +222,14 @@ class Scenario:
         return ped
 
     def _try_pedestrian(self, fwd, right):
+        """Spawn on the ground measured at that spot - not at the ego spawn's height: on a road that climbs towards
+        the junction the pedestrian would otherwise start (partly) underground, invisible to both cameras."""
         bp = self.lib.filter("walker.pedestrian.0001")[0]
-        for dz in (0.6, 1.0, 1.5):
-            ped = self._spawn(bp, self._offset(self.spawn_tf, fwd=fwd, right=right, up=dz))
+        tf = self._offset(self.spawn_tf, fwd=fwd, right=right)
+        ground = self.ped_ground = self._ground_z(tf.location)
+        for dz in (1.0, 1.3, 1.7):                            # walker origin is at its centre (~0.9 m up)
+            tf.location.z = ground + dz
+            ped = self._spawn(bp, tf)
             if ped:
                 return ped
         return None
@@ -265,13 +270,14 @@ class Scenario:
         col.listen(lambda ev: self.collisions.append(ev.other_actor.type_id))
 
         self.junction_info = self.crossing_info = None
+        self.walking, self.walk_t, self.hit = False, 0.0, False
+        self.pause_left = self.pause_at = None
+        self.v_cruise, self.t_hidden = 0.0, 0.0
         if a.scenario == "intersection":
             self._build_intersection()
         else:
             self._build_parked_truck()
         self.ped_dir = road_tf.get_right_vector()             # crossing = towards the LEFT (-right)
-        self.walking, self.walk_t = False, 0.0
-        self.pause_left = self.pause_at = None
 
         # autopilot for the ego, our pipeline is the only thing allowed to react to pedestrians
         self.ego.set_autopilot(True, self.tm.get_port())
@@ -302,13 +308,20 @@ class Scenario:
         self._rsu(TRUCK_DIST + ext.x * 0.6, -RSU_SIDE_OFFSET)
 
     def _build_intersection(self):
-        right_edge, left_edge = road_edges(self.jx_wp)
-        # delivery truck parked half on the kerb, its nose just short of the crossing (truck sizes differ
+        _, left_edge = road_edges(self.jx_wp)
+        # delivery truck stopped right beside the ego lane, its nose just short of the crossing (truck sizes differ
         # between blueprints, so everything below is placed from the extent of the truck that actually spawned)
         nose = self.jx_dist - JX_CROSSING_BACK
-        self.truck, truck_tf, ext = self._truck(nose - 4.5, [right_edge + JX_TRUCK_KERB - d for d in (0.0, 0.4, 0.8, 1.2, 1.6)])
+        self.truck, truck_tf, ext = self._truck(nose - 4.5, [JX_TRUCK_INNER + 1.3 + d for d in (0.0, 0.4, 0.8, -0.3)])
         bb = self.truck.bounding_box
         t_fwd, t_right = self._road_coords(truck_tf.location)
+        if abs(t_right - (JX_TRUCK_INNER + ext.y)) > 0.05:  # now that its width is known, put its near side exactly
+            shift = (JX_TRUCK_INNER + ext.y) - t_right        # JX_TRUCK_INNER from the ego lane centre
+            r = self.spawn_tf.get_right_vector()
+            truck_tf.location.x += r.x * shift
+            truck_tf.location.y += r.y * shift
+            self.truck.set_transform(truck_tf)
+            t_right += shift
         t_fwd += bb.location.x                                # bounding-box centre (may be offset from the origin)
         self.blocker_info = {"x": truck_tf.location.x, "y": truck_tf.location.y, "yaw": self.road_yaw,
                              "length": 2 * ext.x, "width": 2 * ext.y, "height": 2 * ext.z, "label": "delivery truck (simulated)"}
@@ -326,16 +339,15 @@ class Scenario:
         self.walk_speed = JX_PED_SPEED
         self.pause_at, self.pause_left = 0.0, JX_PED_PAUSE  # stop on the ego lane centre line
         self.walk_time = (t_right + left_edge + 2.0) / self.walk_speed
-        # Step out so the pedestrian appears (to the onboard camera) well inside a full-speed car's stopping distance:
-        # hidden while walking from the truck's centre line past its inner side, then visible.
-        v = self.args.target_speed / 3.6
-        t_hidden = max(ext.y - 0.3, 0.3) / self.walk_speed
-        stopping = v * self.args.reaction_time + v * v / (2 * MAX_DECEL)
-        self.trigger = JX_TRIGGER_DIST or (JX_VISIBLE_FRACTION * stopping + v * t_hidden + BUMPER)
-        print(f"[carla_sim] at {self.args.target_speed:.0f} km/h the car needs ~{stopping:.1f} m to stop; the "
-              f"pedestrian becomes visible ~{JX_VISIBLE_FRACTION * stopping:.1f} m ahead of the bumper")
-        print(f"[carla_sim] truck {2 * ext.x:.1f} x {2 * ext.y:.1f} m at {t_right:.1f} m right; "
-              f"pedestrian {ped_fwd - t_fwd - ext.x:.1f} m in front of it; trigger {self.trigger:.1f} m")
+        # hidden while walking from the truck's centre line past its near side; the step-out distance itself is
+        # computed per run from the cruise speed (see stepout_distance)
+        self.t_hidden = max(ext.y - 0.3, 0.3) / self.walk_speed
+        print(f"[carla_sim] truck {2 * ext.x:.1f} x {2 * ext.y:.1f} m, near side {t_right - ext.y:.1f} m right of the "
+              f"ego lane centre; pedestrian {ped_fwd - t_fwd - ext.x:.1f} m in front of its nose")
+        self.world.tick()                                     # let the pedestrian settle, then check it stands
+        p_loc = self.ped.get_location()
+        print(f"[carla_sim] pedestrian {p_loc.z - self.ped_ground:.2f} m above the ground "
+              f"(~0.9 expected: walker origin is at its centre)")
         # junction footprint along the ego road (for the dashboard); RSU on the left, aimed at the pedestrian
         jb, fv = self.junction.bounding_box, self.spawn_tf.get_forward_vector()
         jlen = 2 * (abs(fv.x) * jb.extent.x + abs(fv.y) * jb.extent.y)
@@ -376,9 +388,18 @@ class Scenario:
         self.build()
 
     # -------------------------------------------------------------- per-tick logic
-    def step(self, sim_t):
-        """Pedestrian trigger + walking. Returns True if a new pedestrian collision happened."""
-        if not self.walking and self.ped_ahead() < self.trigger:
+    def stepout_distance(self):
+        """Intersection: how far ahead the pedestrian is when stepping out, from the cruise speed (the top speed so
+        far - identical with cooperative perception ON and OFF, before any RSU warning slows the car)."""
+        v = max(self.v_cruise, 3.0)
+        stopping = v * self.args.reaction_time + v * v / (2 * MAX_DECEL)
+        return JX_VISIBLE_FRACTION * stopping + v * self.t_hidden + BUMPER
+
+    def step(self, sim_t, speed):
+        """Pedestrian trigger + walking. Returns True for the first pedestrian collision of a run."""
+        self.v_cruise = max(self.v_cruise, speed)
+        trigger = self.stepout_distance() if self.args.scenario == "intersection" else self.trigger
+        if not self.walking and self.ped_ahead() < trigger:
             self.walking, self.walk_t = True, 0.0
         if self.walking:
             dt = self.world.get_settings().fixed_delta_seconds
@@ -390,7 +411,8 @@ class Scenario:
                 self.walk_t += dt
             d = self.ped_dir
             self.ped.apply_control(carla.WalkerControl(carla.Vector3D(-d.x, -d.y, 0.0), speed))
-        hit = any("walker" in c for c in self.collisions)
+        hit = any("walker" in c for c in self.collisions) and not self.hit
+        self.hit = self.hit or hit
         self.collisions.clear()
         return hit
 
@@ -433,7 +455,7 @@ class Scenario:
         i.e. CARLA's own autopilot is braking - so a slowdown is never wrongly credited to the RSU."""
         target = self.args.target_speed / 3.6
         self.reached_speed = self.reached_speed or speed > 0.9 * target
-        if not (self.reached_speed and state == "CLEAR" and speed < 0.7 * target):
+        if self.walking or not (self.reached_speed and state == "CLEAR" and speed < 0.7 * target):
             self.slow_since = None
             return False
         self.slow_since = self.slow_since or time.time()
@@ -478,7 +500,6 @@ class RunSummary:
                    + f", peak deceleration {self.peak_decel:.1f} m/s^2, closest gap "
                    + (f"{self.min_gap:.1f} m" if self.min_gap is not None else "-")
                    + (", COLLISION" if self.collided else ", no collision"))
-            print(msg)
             self.pipe.note(t, "alert" if self.collided else "ok", msg)
 
 
@@ -584,10 +605,11 @@ def main():
             ego = scn.ego_state()
 
             was_walking = scn.walking
-            if scn.step(sim_t):
+            if scn.step(sim_t, ego["speed"]):
                 pipe.collision(sim_t)
             if scn.walking and not was_walking:
-                pipe.note(sim_t, "info", f"Pedestrian steps out, {scn.ped_ahead():.1f} m ahead of the ego")
+                pipe.note(sim_t, "info", f"Pedestrian steps out, {scn.ped_ahead():.1f} m ahead of the ego "
+                                         f"(cruise speed {scn.v_cruise * 3.6:.0f} km/h)")
 
             if tick % a.detect_every == 0:
                 fe, box_e, onboard = run_detection(detector, img_e, scn.ground_z)
