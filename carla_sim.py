@@ -45,7 +45,8 @@ TRIGGER_DIST = 22.0         # pedestrian starts crossing when the ego is this cl
 WALK_SPEED, WALK_TIME = 1.5, 6.5
 RSU_SIDE_OFFSET, RSU_HEIGHT, RSU_PITCH = 6.5, 8.0, -35.0     # RSU pole on the LEFT of the road
 # intersection scenario (distances along the ego road, relative to where the junction starts)
-JX_MIN_DIST, JX_MAX_DIST = 45.0, 90.0   # how far ahead of the ego spawn the junction may be
+JX_MIN_DIST, JX_MAX_DIST = 70.0, 130.0  # how far ahead of the ego spawn the junction may be (room to reach
+JX_FALLBACK_MIN = 45.0                  # --target-speed before the step-out); closer junctions only as fallback
 JX_CROSSING_BACK = 1.5      # truck front / crossing this far before the junction entry [m]
 JX_TRUCK_KERB = 1.4         # truck centre this far right of the road's right edge (half on the kerb)
 JX_PED_GAPS = (0.6, 0.9, 1.2)   # pedestrian this far in front of the truck's nose (first that spawns) [m]
@@ -63,6 +64,7 @@ JX_TRIGGER_DIST = None      # step out when the ego is this far before the pedes
 JX_TRIGGER_EXTRA = 2.3      # ego location is the car's centre; its front bumper is ~2.3 m further forward
 EGO_CAM = carla.Transform(carla.Location(x=1.5, z=1.6))
 SLOW_FACTOR = 0.4           # SLOW = drive at 40 % of --target-speed (same as the mock)
+DEFAULT_SPEED = {"intersection": 50.0, "parked_truck": 35.0}   # km/h; 50 = typical urban speed limit
 SCENARIO_NAMES = {"intersection": "Blind intersection - pedestrian on crossing hidden by parked delivery truck",
                   "parked_truck": "Blind spot - pedestrian behind parked truck"}
 TRUCK_BPS = ("vehicle.carlamotors.carlacola", "vehicle.carlamotors.european_hgv", "vehicle.carlamotors.firetruck",
@@ -159,7 +161,12 @@ class Scenario:
         self.cmap, self.actors = world.get_map(), []
         self.lib = world.get_blueprint_library()
         if args.scenario == "intersection":                                       # fixed for restarts
-            self.spawn_tf, self.jx_dist, self.jx_wp, self.junction = find_junction_spawn(self.cmap, args.spawn_index)
+            try:
+                found = find_junction_spawn(self.cmap, args.spawn_index)
+            except RuntimeError:
+                found = find_junction_spawn(self.cmap, args.spawn_index, lo=JX_FALLBACK_MIN)
+                print("[carla_sim] warning: junction is close to the spawn - the ego may not reach --target-speed")
+            self.spawn_tf, self.jx_dist, self.jx_wp, self.junction = found
         else:
             self.spawn_tf = find_straight_spawn(self.cmap, index=args.spawn_index)
         self.build()
@@ -457,12 +464,20 @@ def main():
     ap.add_argument("--fov", type=float, default=90.0)
     ap.add_argument("--fps", type=int, default=20, help="simulation ticks per simulated second")
     ap.add_argument("--detect-every", type=int, default=2, help="run YOLO every N ticks")
-    ap.add_argument("--target-speed", type=float, default=35.0, help="km/h")
+    ap.add_argument("--target-speed", type=float, default=None,
+                    help="km/h (default: 50 for intersection, 35 for parked_truck)")
+    ap.add_argument("--reaction-time", type=float, default=0.5,
+                    help="seconds from a decision to the car acting on it (detection, tracking, brake actuation). "
+                         "CARLA otherwise brakes on the very frame the camera sees something, which no real "
+                         "system can; applied identically with cooperative perception ON and OFF")
     ap.add_argument("--spawn-index", type=int, default=-1)
     ap.add_argument("--dash-port", type=int, default=8000)
     ap.add_argument("--transport", choices=["udp", "mqtt"], default="udp")
     ap.add_argument("--mqtt-host", default="127.0.0.1")
     a = ap.parse_args()
+    a.target_speed = a.target_speed or DEFAULT_SPEED[a.scenario]
+    print(f"[carla_sim] scenario {a.scenario}, target speed {a.target_speed:.0f} km/h, "
+          f"reaction time {a.reaction_time:.2f} s (same with cooperative perception ON and OFF)")
 
     # keep only road users - without a class list YOLO reports all 80 COCO classes (e.g. "toilet")
     detector = Detector(a.weights, a.conf, a.imgsz, a.device, a.classes or DEFAULT_CLASSES)
@@ -494,12 +509,14 @@ def main():
     scn = Scenario(world, tm, a)
     frames, boxes, ego_cam, last_push, tick, fps, t_prev = {}, {}, None, 0.0, 0, 0.0, time.time()
     onboard, rsu_dets = [], []
+    decisions = deque()                                    # (sim time, state) - acted on after --reaction-time
     try:
         while True:
             if flags["reset"]:
                 pipe.reset()
                 scn.rebuild()
                 flags["reset"], onboard, rsu_dets, frames, boxes, ego_cam = False, [], [], {}, {}, None
+                decisions.clear()
                 print(f"\n---- scenario restarted, cooperative perception {'ON' if pipe.coop else 'OFF'} ----")
             frame_id = world.tick()
             sim_t = world.get_snapshot().timestamp.elapsed_seconds
@@ -524,8 +541,13 @@ def main():
 
             time.sleep(0.001)                                       # give the UDP/MQTT thread a moment
             res = pipe.vehicle_step(sim_t, ego, onboard)
-            scn.apply_decision(res["decision"]["state"])
-            if scn.autopilot_slowdown(res["decision"]["state"], ego["speed"]):
+            # the car acts on the decision made --reaction-time ago (same delay with cooperative ON and OFF)
+            decisions.append((sim_t, res["decision"]["state"]))
+            while len(decisions) > 1 and decisions[1][0] <= sim_t - a.reaction_time:
+                decisions.popleft()
+            acted = decisions[0][1] if decisions[0][0] <= sim_t - a.reaction_time else "CLEAR"
+            scn.apply_decision(acted)
+            if scn.autopilot_slowdown(acted, ego["speed"]):
                 pipe.note(sim_t, "warn", "Ego slowed by the CARLA autopilot, not by Perceptinet (decision is CLEAR)")
 
             now = time.time()

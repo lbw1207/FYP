@@ -98,6 +98,11 @@ Then open **http://localhost:8000**. Useful flags:
 - `--town Town05` / `--spawn-index 12` — pick a different straight road segment if the default
   spawn doesn't suit your scene
 - `--detect-every 2` — run YOLO every N ticks instead of every tick, if inference is the bottleneck
+- `--target-speed 50` — cruising speed in km/h (default 50 for `intersection`, 35 for `parked_truck`)
+- `--reaction-time 0.5` — seconds between a decision and the car acting on it (detection, tracking and
+  brake actuation). Without it CARLA brakes on the very frame the camera sees the pedestrian, which no real
+  system can. It is applied identically with cooperative perception ON and OFF, so the only difference
+  between the two runs is the RSU's early warning — state this assumption in the report
 - `--device 0` — run YOLO on a specific GPU; `--device cpu` to force CPU
 - `--transport mqtt --mqtt-host <broker>` — use MQTT instead of UDP for the V2I link (needs
   `pip install paho-mqtt` and a running broker, e.g. `mosquitto`)
